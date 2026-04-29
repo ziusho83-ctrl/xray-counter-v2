@@ -33,7 +33,7 @@ type PwbDemand = {
   requiredQty: number;
 };
 type SortDir = "asc" | "desc";
-type SummarySortKey = "date" | "pwbPn" | "requiredQty" | "unitCount";
+type SummarySortKey = "date" | "unitPn" | "unitDescription" | "pwbPn" | "requiredQty" | "unitCount";
 type MissingSortKey = "unitPn" | "description" | "product" | "qty";
 
 const MONTHS: Record<string, number> = {
@@ -384,22 +384,40 @@ export default function IopPage() {
   }, [forecastRows, mappingRows]);
 
   const summary = useMemo(() => {
-    const agg = new Map<string, { date: string; pwbPn: string; requiredQty: number; unitCount: number }>();
+    const agg = new Map<string, { date: string; pwbPn: string; requiredQty: number; unitCount: number; unitPns: Set<string>; unitDescriptions: Set<string> }>();
     for (const r of pwbDemand) {
       const key = `${r.date}||${r.pwbPn}`;
       const ex = agg.get(key);
       if (ex) {
         ex.requiredQty += r.requiredQty;
         ex.unitCount += 1;
+        ex.unitPns.add(r.unitPn);
+        if (r.unitDescription) ex.unitDescriptions.add(r.unitDescription);
       } else {
-        agg.set(key, { date: r.date, pwbPn: r.pwbPn, requiredQty: r.requiredQty, unitCount: 1 });
+        agg.set(key, {
+          date: r.date,
+          pwbPn: r.pwbPn,
+          requiredQty: r.requiredQty,
+          unitCount: 1,
+          unitPns: new Set([r.unitPn]),
+          unitDescriptions: new Set(r.unitDescription ? [r.unitDescription] : []),
+        });
       }
     }
-    const rows = Array.from(agg.values());
+    const rows = Array.from(agg.values()).map((r) => ({
+      date: r.date,
+      pwbPn: r.pwbPn,
+      requiredQty: r.requiredQty,
+      unitCount: r.unitCount,
+      unitPn: Array.from(r.unitPns).sort().join("; "),
+      unitDescription: Array.from(r.unitDescriptions).sort().join("; "),
+    }));
     rows.sort((a, b) => {
       let cmp = 0;
       switch (summarySort.key) {
         case "date": cmp = a.date.localeCompare(b.date); break;
+        case "unitPn": cmp = a.unitPn.localeCompare(b.unitPn); break;
+        case "unitDescription": cmp = a.unitDescription.localeCompare(b.unitDescription); break;
         case "pwbPn": cmp = a.pwbPn.localeCompare(b.pwbPn); break;
         case "requiredQty": cmp = a.requiredQty - b.requiredQty; break;
         case "unitCount": cmp = a.unitCount - b.unitCount; break;
@@ -478,8 +496,8 @@ export default function IopPage() {
 
   function exportSummary() {
     downloadCsv("iop-pwb-demand-summary.csv", [
-      ["date", "pwb_pn", "required_qty", "source_unit_lines"],
-      ...summary.map((r) => [r.date, r.pwbPn, r.requiredQty, r.unitCount]),
+      ["date", "unit_level_part_number", "unit_level_part_number_description", "pwb_pn", "required_qty", "source_unit_lines"],
+      ...summary.map((r) => [r.date, r.unitPn, r.unitDescription, r.pwbPn, r.requiredQty, r.unitCount]),
     ]);
   }
 
@@ -543,6 +561,8 @@ export default function IopPage() {
               <thead className="sticky top-0 bg-white">
                 <tr className="text-left border-b">
                   <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("date")}>Need Date{summarySortLabel("date")}</th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("unitPn")}>Unit Level Part Number{summarySortLabel("unitPn")}</th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("unitDescription")}>Unit Level Part Number Description{summarySortLabel("unitDescription")}</th>
                   <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("pwbPn")}>PWB{summarySortLabel("pwbPn")}</th>
                   <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("requiredQty")}>Required Qty{summarySortLabel("requiredQty")}</th>
                   <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("unitCount")}>Source Lines{summarySortLabel("unitCount")}</th>
@@ -552,6 +572,8 @@ export default function IopPage() {
                 {summary.map((r) => (
                   <tr key={`${r.date}-${r.pwbPn}`} className="border-b">
                     <td className="p-2 whitespace-nowrap">{r.date}</td>
+                    <td className="p-2 font-mono">{r.unitPn}</td>
+                    <td className="p-2 min-w-72">{r.unitDescription || "—"}</td>
                     <td className="p-2 font-mono">{r.pwbPn}</td>
                     <td className="p-2 font-semibold">{r.requiredQty}</td>
                     <td className="p-2">{r.unitCount}</td>
