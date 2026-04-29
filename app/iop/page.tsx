@@ -14,6 +14,7 @@ type ForecastDemand = {
   date: string;
   qty: number;
   sheet: string;
+  sourceFields: Record<string, string>;
 };
 type UnitPwbMapRow = {
   unitPn: string;
@@ -80,6 +81,7 @@ function inferYear(fileName: string, sheetNames: string[]): number {
 function parseDateHeader(v: Cell, fallbackYear: number): string | null {
   if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
   if (typeof v === "number") {
+    if (v < 20000) return null;
     const parsed = XLSX.SSF.parse_date_code(v);
     if (parsed?.y && parsed?.m && parsed?.d) {
       return new Date(parsed.y, parsed.m - 1, parsed.d).toISOString().slice(0, 10);
@@ -124,6 +126,12 @@ function parseForecastWorkbook(wb: XLSX.WorkBook, fileName: string): ForecastDem
     const rows = worksheetRows(ws);
     if (rows.length < 2) continue;
 
+    const salesOrderDemand = parseSalesOrderDemandSheet(rows, sheetName, fallbackYear);
+    if (salesOrderDemand) {
+      demand.push(...salesOrderDemand);
+      continue;
+    }
+
     let headerIdx = -1;
     let dateCols: Array<{ col: number; date: string }> = [];
     for (let r = 0; r < Math.min(rows.length, 10); r++) {
@@ -155,10 +163,17 @@ function parseForecastWorkbook(wb: XLSX.WorkBook, fileName: string): ForecastDem
       const description = cellText(row[2]);
       const avgUp = cellText(row[3]);
       const onHand = cellText(row[4]);
+      const sourceFields = {
+        PRODUCT: product,
+        ITEM: unitPn,
+        DESC: description,
+        "AVG UP": avgUp,
+        "ON HAND": onHand,
+      };
       for (const dc of dateCols) {
         const qty = cellNumber(row[dc.col]);
         if (qty > 0) {
-          demand.push({ product, unitPn, description, avgUp, onHand, date: dc.date, qty, sheet: sheetName });
+          demand.push({ product, unitPn, description, avgUp, onHand, date: dc.date, qty, sheet: sheetName, sourceFields });
         }
       }
     }
@@ -173,6 +188,52 @@ function normalizeHeader(v: string): string {
 
 function findHeaderIndex(headers: string[], patterns: RegExp[]): number {
   return headers.findIndex((h) => patterns.some((p) => p.test(h)));
+}
+
+function sourceFieldsFromRow(headers: string[], row: Cell[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((h, i) => {
+    const header = h.trim();
+    if (!header) return;
+    out[header] = cellText(row[i]);
+  });
+  return out;
+}
+
+function parseSalesOrderDemandSheet(rows: Cell[][], sheetName: string, fallbackYear: number): ForecastDemand[] | null {
+  for (let r = 0; r < Math.min(rows.length, 10); r++) {
+    const rawHeaders = (rows[r] || []).map((c) => cellText(c));
+    const headers = rawHeaders.map(normalizeHeader);
+    const itemIdx = findHeaderIndex(headers, [/^item$/, /^item_number$/, /^part_number$/]);
+    const qtyIdx = findHeaderIndex(headers, [/^quantity$/, /^qty$/, /^qty_required$/, /^q$/]);
+    const dateIdx = findHeaderIndex(headers, [/^mps_date$/, /^mps$/, /^current_promise_date$/, /^customer_contract_date$/, /^demand_date$/]);
+    if (itemIdx < 0 || qtyIdx < 0 || dateIdx < 0) continue;
+
+    const productIdx = findHeaderIndex(headers, [/^sales_order_number$/, /^so$/, /^product$/, /^customer$/]);
+    const descIdx = findHeaderIndex(headers, [/^memo$/, /^desc$/, /^description$/]);
+    const out: ForecastDemand[] = [];
+    for (let i = r + 1; i < rows.length; i++) {
+      const row = rows[i] || [];
+      const unitPn = normPart(cellText(row[itemIdx]));
+      const qty = cellNumber(row[qtyIdx]);
+      const date = parseDateHeader(row[dateIdx], fallbackYear);
+      if (!unitPn || qty <= 0 || !date) continue;
+      const description = descIdx >= 0 ? cellText(row[descIdx]) : "";
+      out.push({
+        product: productIdx >= 0 ? cellText(row[productIdx]) : "",
+        unitPn,
+        description,
+        avgUp: "",
+        onHand: "",
+        date,
+        qty,
+        sheet: sheetName,
+        sourceFields: sourceFieldsFromRow(rawHeaders, row),
+      });
+    }
+    return out;
+  }
+  return null;
 }
 
 function parseUnitPwbWorkbook(wb: XLSX.WorkBook, pwbSet: Set<string>, filterToKnownPwbs: boolean): UnitPwbMapRow[] {
@@ -378,6 +439,20 @@ export default function IopPage() {
     return rows;
   }, [forecastRows, mappingRows, missingSort]);
 
+  const forecastPreviewColumns = useMemo(() => {
+    const cols: string[] = [];
+    const seen = new Set<string>();
+    for (const r of forecastRows.slice(0, 200)) {
+      for (const k of Object.keys(r.sourceFields)) {
+        if (!seen.has(k)) {
+          seen.add(k);
+          cols.push(k);
+        }
+      }
+    }
+    return cols;
+  }, [forecastRows]);
+
   function toggleSummarySort(key: SummarySortKey) {
     setSummarySort((prev) => prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "requiredQty" || key === "unitCount" ? "desc" : "asc" });
   }
@@ -511,8 +586,18 @@ export default function IopPage() {
           <h2 className="font-semibold">Forecast Preview</h2>
           <div className="overflow-auto max-h-72">
             <table className="w-full text-xs">
-              <thead><tr className="text-left border-b"><th className="p-2">PRODUCT</th><th className="p-2">ITEM</th><th className="p-2">DESC</th><th className="p-2">AVG UP</th><th className="p-2">ON HAND</th><th className="p-2">DEMAND DATE</th><th className="p-2">QTY REQUIREMENT</th><th className="p-2">SOURCE SHEET</th></tr></thead>
-              <tbody>{forecastRows.slice(0, 200).map((r, i) => <tr key={`${r.sheet}-${r.unitPn}-${r.date}-${i}`} className="border-b"><td className="p-2">{r.product}</td><td className="p-2 font-mono">{r.unitPn}</td><td className="p-2">{r.description}</td><td className="p-2 whitespace-nowrap">{r.avgUp}</td><td className="p-2">{r.onHand}</td><td className="p-2">{r.date}</td><td className="p-2 font-semibold">{r.qty}</td><td className="p-2">{r.sheet}</td></tr>)}</tbody>
+              <thead><tr className="text-left border-b">
+                {forecastPreviewColumns.map((col) => <th key={col} className="p-2 whitespace-nowrap">{col}</th>)}
+                <th className="p-2 whitespace-nowrap">DEMAND DATE</th>
+                <th className="p-2 whitespace-nowrap">QTY REQUIREMENT</th>
+                <th className="p-2 whitespace-nowrap">SOURCE SHEET</th>
+              </tr></thead>
+              <tbody>{forecastRows.slice(0, 200).map((r, i) => <tr key={`${r.sheet}-${r.unitPn}-${r.date}-${i}`} className="border-b">
+                {forecastPreviewColumns.map((col) => <td key={col} className="p-2 whitespace-nowrap">{r.sourceFields[col] || ""}</td>)}
+                <td className="p-2 whitespace-nowrap">{r.date}</td>
+                <td className="p-2 font-semibold">{r.qty}</td>
+                <td className="p-2">{r.sheet}</td>
+              </tr>)}</tbody>
             </table>
           </div>
         </section>
