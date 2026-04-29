@@ -9,6 +9,8 @@ type ForecastDemand = {
   product: string;
   unitPn: string;
   description: string;
+  avgUp: string;
+  onHand: string;
   date: string;
   qty: number;
   sheet: string;
@@ -151,10 +153,12 @@ function parseForecastWorkbook(wb: XLSX.WorkBook, fileName: string): ForecastDem
       const unitPn = normPart(cellText(row[1]));
       if (!unitPn) continue;
       const description = cellText(row[2]);
+      const avgUp = cellText(row[3]);
+      const onHand = cellText(row[4]);
       for (const dc of dateCols) {
         const qty = cellNumber(row[dc.col]);
         if (qty > 0) {
-          demand.push({ product, unitPn, description, date: dc.date, qty, sheet: sheetName });
+          demand.push({ product, unitPn, description, avgUp, onHand, date: dc.date, qty, sheet: sheetName });
         }
       }
     }
@@ -507,8 +511,8 @@ export default function IopPage() {
           <h2 className="font-semibold">Forecast Preview</h2>
           <div className="overflow-auto max-h-72">
             <table className="w-full text-xs">
-              <thead><tr className="text-left border-b"><th className="p-2">Date</th><th className="p-2">Product</th><th className="p-2">Unit PN</th><th className="p-2">Description</th><th className="p-2">Qty</th><th className="p-2">Sheet</th></tr></thead>
-              <tbody>{forecastRows.slice(0, 200).map((r, i) => <tr key={`${r.sheet}-${r.unitPn}-${r.date}-${i}`} className="border-b"><td className="p-2">{r.date}</td><td className="p-2">{r.product}</td><td className="p-2 font-mono">{r.unitPn}</td><td className="p-2">{r.description}</td><td className="p-2">{r.qty}</td><td className="p-2">{r.sheet}</td></tr>)}</tbody>
+              <thead><tr className="text-left border-b"><th className="p-2">PRODUCT</th><th className="p-2">ITEM</th><th className="p-2">DESC</th><th className="p-2">AVG UP</th><th className="p-2">ON HAND</th><th className="p-2">DEMAND DATE</th><th className="p-2">QTY REQUIREMENT</th><th className="p-2">SOURCE SHEET</th></tr></thead>
+              <tbody>{forecastRows.slice(0, 200).map((r, i) => <tr key={`${r.sheet}-${r.unitPn}-${r.date}-${i}`} className="border-b"><td className="p-2">{r.product}</td><td className="p-2 font-mono">{r.unitPn}</td><td className="p-2">{r.description}</td><td className="p-2 whitespace-nowrap">{r.avgUp}</td><td className="p-2">{r.onHand}</td><td className="p-2">{r.date}</td><td className="p-2 font-semibold">{r.qty}</td><td className="p-2">{r.sheet}</td></tr>)}</tbody>
             </table>
           </div>
         </section>
