@@ -23,11 +23,15 @@ type PwbDemand = {
   date: string;
   product: string;
   unitPn: string;
+  unitDescription: string;
   unitQty: number;
   pwbPn: string;
   qtyPerUnit: number;
   requiredQty: number;
 };
+type SortDir = "asc" | "desc";
+type SummarySortKey = "date" | "pwbPn" | "requiredQty" | "unitCount";
+type MissingSortKey = "unitPn" | "description" | "product" | "qty";
 
 const MONTHS: Record<string, number> = {
   jan: 0, january: 0,
@@ -243,6 +247,8 @@ export default function IopPage() {
   const [boms, setBoms] = useState<BomItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filterToKnownPwbs, setFilterToKnownPwbs] = useState(true);
+  const [summarySort, setSummarySort] = useState<{ key: SummarySortKey; dir: SortDir }>({ key: "date", dir: "asc" });
+  const [missingSort, setMissingSort] = useState<{ key: MissingSortKey; dir: SortDir }>({ key: "qty", dir: "desc" });
 
   useEffect(() => {
     void (async () => {
@@ -301,6 +307,7 @@ export default function IopPage() {
           date: f.date,
           product: f.product,
           unitPn: f.unitPn,
+          unitDescription: f.description,
           unitQty: f.qty,
           pwbPn: p.pwbPn,
           qtyPerUnit: p.qtyPerUnit,
@@ -323,22 +330,70 @@ export default function IopPage() {
         agg.set(key, { date: r.date, pwbPn: r.pwbPn, requiredQty: r.requiredQty, unitCount: 1 });
       }
     }
-    return Array.from(agg.values()).sort((a, b) => a.date.localeCompare(b.date) || a.pwbPn.localeCompare(b.pwbPn));
-  }, [pwbDemand]);
+    const rows = Array.from(agg.values());
+    rows.sort((a, b) => {
+      let cmp = 0;
+      switch (summarySort.key) {
+        case "date": cmp = a.date.localeCompare(b.date); break;
+        case "pwbPn": cmp = a.pwbPn.localeCompare(b.pwbPn); break;
+        case "requiredQty": cmp = a.requiredQty - b.requiredQty; break;
+        case "unitCount": cmp = a.unitCount - b.unitCount; break;
+      }
+      if (cmp === 0) cmp = a.date.localeCompare(b.date) || a.pwbPn.localeCompare(b.pwbPn);
+      return summarySort.dir === "asc" ? cmp : -cmp;
+    });
+    return rows;
+  }, [pwbDemand, summarySort]);
 
   const missingUnits = useMemo(() => {
     const mapped = new Set(mappingRows.map((m) => m.unitPn));
-    const miss = new Map<string, number>();
+    const miss = new Map<string, { unitPn: string; description: string; product: string; qty: number }>();
     for (const f of forecastRows) {
-      if (!mapped.has(f.unitPn)) miss.set(f.unitPn, (miss.get(f.unitPn) || 0) + f.qty);
+      if (mapped.has(f.unitPn)) continue;
+      const ex = miss.get(f.unitPn);
+      if (ex) {
+        ex.qty += f.qty;
+        if (!ex.description && f.description) ex.description = f.description;
+        if (!ex.product && f.product) ex.product = f.product;
+      } else {
+        miss.set(f.unitPn, { unitPn: f.unitPn, description: f.description, product: f.product, qty: f.qty });
+      }
     }
-    return Array.from(miss.entries()).map(([unitPn, qty]) => ({ unitPn, qty })).sort((a, b) => b.qty - a.qty);
-  }, [forecastRows, mappingRows]);
+    const rows = Array.from(miss.values());
+    rows.sort((a, b) => {
+      let cmp = 0;
+      switch (missingSort.key) {
+        case "unitPn": cmp = a.unitPn.localeCompare(b.unitPn); break;
+        case "description": cmp = a.description.localeCompare(b.description); break;
+        case "product": cmp = a.product.localeCompare(b.product); break;
+        case "qty": cmp = a.qty - b.qty; break;
+      }
+      if (cmp === 0) cmp = a.unitPn.localeCompare(b.unitPn);
+      return missingSort.dir === "asc" ? cmp : -cmp;
+    });
+    return rows;
+  }, [forecastRows, mappingRows, missingSort]);
+
+  function toggleSummarySort(key: SummarySortKey) {
+    setSummarySort((prev) => prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "requiredQty" || key === "unitCount" ? "desc" : "asc" });
+  }
+
+  function toggleMissingSort(key: MissingSortKey) {
+    setMissingSort((prev) => prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "qty" ? "desc" : "asc" });
+  }
+
+  function summarySortLabel(key: SummarySortKey) {
+    return summarySort.key === key ? (summarySort.dir === "asc" ? " ↑" : " ↓") : " ↕";
+  }
+
+  function missingSortLabel(key: MissingSortKey) {
+    return missingSort.key === key ? (missingSort.dir === "asc" ? " ↑" : " ↓") : " ↕";
+  }
 
   function exportDetail() {
     downloadCsv("iop-pwb-demand-detail.csv", [
-      ["date", "product", "unit_pn", "unit_qty", "pwb_pn", "qty_per_unit", "required_qty"],
-      ...pwbDemand.map((r) => [r.date, r.product, r.unitPn, r.unitQty, r.pwbPn, r.qtyPerUnit, r.requiredQty]),
+      ["date", "product", "unit_pn", "unit_description", "unit_qty", "pwb_pn", "qty_per_unit", "required_qty"],
+      ...pwbDemand.map((r) => [r.date, r.product, r.unitPn, r.unitDescription, r.unitQty, r.pwbPn, r.qtyPerUnit, r.requiredQty]),
     ]);
   }
 
@@ -408,10 +463,10 @@ export default function IopPage() {
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-white">
                 <tr className="text-left border-b">
-                  <th className="p-2">Need Date</th>
-                  <th className="p-2">PWB</th>
-                  <th className="p-2">Required Qty</th>
-                  <th className="p-2">Source Lines</th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("date")}>Need Date{summarySortLabel("date")}</th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("pwbPn")}>PWB{summarySortLabel("pwbPn")}</th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("requiredQty")}>Required Qty{summarySortLabel("requiredQty")}</th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("unitCount")}>Source Lines{summarySortLabel("unitCount")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -432,11 +487,16 @@ export default function IopPage() {
       {forecastRows.length > 0 && missingUnits.length > 0 && (
         <section className="border border-amber-300 bg-amber-50 rounded p-4 space-y-2">
           <h2 className="font-semibold text-amber-900">Unit PNs waiting for PWB breakdown</h2>
-          <p className="text-xs text-amber-800">These forecast items do not have Unit → PWB mapping yet.</p>
-          <div className="overflow-auto max-h-64 bg-white/60 rounded">
+          <p className="text-xs text-amber-800">These forecast items do not have Unit → PWB mapping yet. Click a column header to sort.</p>
+          <div className="overflow-auto max-h-80 bg-white/60 rounded">
             <table className="w-full text-xs">
-              <thead><tr className="text-left border-b"><th className="p-2">Unit PN</th><th className="p-2">Total Forecast Qty</th></tr></thead>
-              <tbody>{missingUnits.map((m) => <tr key={m.unitPn} className="border-b"><td className="p-2 font-mono">{m.unitPn}</td><td className="p-2">{m.qty}</td></tr>)}</tbody>
+              <thead className="sticky top-0 bg-amber-50"><tr className="text-left border-b">
+                <th className="p-2 cursor-pointer select-none hover:bg-amber-100" onClick={() => toggleMissingSort("unitPn")}>Unit PN{missingSortLabel("unitPn")}</th>
+                <th className="p-2 cursor-pointer select-none hover:bg-amber-100" onClick={() => toggleMissingSort("description")}>Description{missingSortLabel("description")}</th>
+                <th className="p-2 cursor-pointer select-none hover:bg-amber-100" onClick={() => toggleMissingSort("product")}>Product{missingSortLabel("product")}</th>
+                <th className="p-2 cursor-pointer select-none hover:bg-amber-100" onClick={() => toggleMissingSort("qty")}>Total Forecast Qty{missingSortLabel("qty")}</th>
+              </tr></thead>
+              <tbody>{missingUnits.map((m) => <tr key={m.unitPn} className="border-b"><td className="p-2 font-mono">{m.unitPn}</td><td className="p-2">{m.description || "—"}</td><td className="p-2">{m.product || "—"}</td><td className="p-2 font-semibold">{m.qty}</td></tr>)}</tbody>
             </table>
           </div>
         </section>
@@ -447,8 +507,8 @@ export default function IopPage() {
           <h2 className="font-semibold">Forecast Preview</h2>
           <div className="overflow-auto max-h-72">
             <table className="w-full text-xs">
-              <thead><tr className="text-left border-b"><th className="p-2">Date</th><th className="p-2">Product</th><th className="p-2">Unit PN</th><th className="p-2">Qty</th><th className="p-2">Sheet</th></tr></thead>
-              <tbody>{forecastRows.slice(0, 200).map((r, i) => <tr key={`${r.sheet}-${r.unitPn}-${r.date}-${i}`} className="border-b"><td className="p-2">{r.date}</td><td className="p-2">{r.product}</td><td className="p-2 font-mono">{r.unitPn}</td><td className="p-2">{r.qty}</td><td className="p-2">{r.sheet}</td></tr>)}</tbody>
+              <thead><tr className="text-left border-b"><th className="p-2">Date</th><th className="p-2">Product</th><th className="p-2">Unit PN</th><th className="p-2">Description</th><th className="p-2">Qty</th><th className="p-2">Sheet</th></tr></thead>
+              <tbody>{forecastRows.slice(0, 200).map((r, i) => <tr key={`${r.sheet}-${r.unitPn}-${r.date}-${i}`} className="border-b"><td className="p-2">{r.date}</td><td className="p-2">{r.product}</td><td className="p-2 font-mono">{r.unitPn}</td><td className="p-2">{r.description}</td><td className="p-2">{r.qty}</td><td className="p-2">{r.sheet}</td></tr>)}</tbody>
             </table>
           </div>
         </section>
