@@ -1,0 +1,31 @@
+{
+  "RC0603FR-0710KL": [
+    { "source": "DigiKey",   "unit_price": 0.0124, "stock": 50000, "lead_time_days": 2,  "moq": 1 },
+    { "source": "Mouser",    "unit_price": 0.0118, "stock": 32000, "lead_time_days": 3,  "moq": 1 },
+    { "source": "Arrow",     "unit_price": 0.0095, "stock": 8000,  "lead_time_days": 14, "moq": 100 }
+  ],
+  "CL10A475KP8NNNC": [
+    { "source": "DigiKey",   "unit_price": 0.0320, "stock": 15000, "lead_time_days": 2,  "moq": 1 },
+    { "source": "Mouser",    "unit_price": 0.0295, "stock": 9000,  "lead_time_days": 4,  "moq": 1 },
+    { "source": "LCSC",      "unit_price": 0.0081, "stock": 120000,"lead_time_days": 21, "moq": 50 }
+  ],
+  "STM32F103C8T6": [
+    { "source": "DigiKey",   "unit_price": 3.21,   "stock": 1200,  "lead_time_days": 2,  "moq": 1 },
+    { "source": "Mouser",    "unit_price": 3.08,   "stock": 800,   "lead_time_days": 3,  "moq": 1 },
+    { "source": "Arrow",     "unit_price": 2.89,   "stock": 300,   "lead_time_days": 10, "moq": 1 }
+  ],
+  "LM358DR": [
+    { "source": "DigiKey",   "unit_price": 0.41,   "stock": 22000, "lead_time_days": 2,  "moq": 1 },
+    { "source": "Mouser",    "unit_price": 0.39,   "stock": 18000, "lead_time_days": 3,  "moq": 1 },
+    { "source": "TI_Direct", "unit_price": 0.27,   "stock": 50000, "lead_time_days": 7,  "moq": 250 }
+  ],
+  "CRCW06031K00FKEA": [
+    { "source": "DigiKey",   "unit_price": 0.0144, "stock": 75000, "lead_time_days": 2,  "moq": 1 },
+    { "source": "Mouser",    "unit_price": 0.0139, "stock": 60000, "lead_time_days": 3,  "moq": 1 }
+  ],
+  "ATMEGA328P-PU": [
+    { "source": "DigiKey",   "unit_price": 2.15,   "stock": 5000,  "lead_time_days": 2,  "moq": 1 },
+    { "source": "Mouser",    "unit_price": 2.08,   "stock": 3200,  "lead_time_days": 3,  "moq": 1 },
+    { "source": "Arrow",     "unit_price": 1.94,   "stock": 1100,  "lead_time_days": 8,  "moq": 1 }
+  ]
+}
