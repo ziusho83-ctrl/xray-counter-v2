@@ -1,0 +1,458 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
+
+type Cell = string | number | boolean | Date | null | undefined;
+type BomItem = { assembly_pn: string; revision: string; line_count: number; bom_type?: string };
+type ForecastDemand = {
+  product: string;
+  unitPn: string;
+  description: string;
+  date: string;
+  qty: number;
+  sheet: string;
+};
+type UnitPwbMapRow = {
+  unitPn: string;
+  pwbPn: string;
+  qtyPerUnit: number;
+  sourceSheet: string;
+};
+type PwbDemand = {
+  date: string;
+  product: string;
+  unitPn: string;
+  unitQty: number;
+  pwbPn: string;
+  qtyPerUnit: number;
+  requiredQty: number;
+};
+
+const MONTHS: Record<string, number> = {
+  jan: 0, january: 0,
+  feb: 1, february: 1,
+  mar: 2, march: 2,
+  apr: 3, april: 3,
+  may: 4,
+  jun: 5, june: 5,
+  jul: 6, july: 6,
+  aug: 7, august: 7,
+  sep: 8, sept: 8, september: 8,
+  oct: 9, october: 9,
+  nov: 10, november: 10,
+  dec: 11, december: 11,
+};
+
+function cellText(v: Cell): string {
+  if (v === null || v === undefined) return "";
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).trim();
+}
+
+function cellNumber(v: Cell): number {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const text = cellText(v).replace(/[$,]/g, "").trim();
+  if (!text || text === "-" || text === "–") return 0;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normPart(v: string): string {
+  return v.trim().toUpperCase();
+}
+
+function inferYear(fileName: string, sheetNames: string[]): number {
+  const hay = `${fileName} ${sheetNames.join(" ")}`;
+  const full = hay.match(/20\d{2}/);
+  if (full) return Number(full[0]);
+  const yy = hay.match(/(?:^|[^\d])(\d{2})(?:$|[^\d])/);
+  if (yy) return 2000 + Number(yy[1]);
+  return new Date().getFullYear();
+}
+
+function parseDateHeader(v: Cell, fallbackYear: number): string | null {
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+  if (typeof v === "number") {
+    const parsed = XLSX.SSF.parse_date_code(v);
+    if (parsed?.y && parsed?.m && parsed?.d) {
+      return new Date(parsed.y, parsed.m - 1, parsed.d).toISOString().slice(0, 10);
+    }
+  }
+  const text = cellText(v);
+  if (!text) return null;
+
+  const mdy = text.match(/^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?$/);
+  if (mdy) {
+    const month = Number(mdy[1]) - 1;
+    const day = Number(mdy[2]);
+    const year = mdy[3] ? (Number(mdy[3]) < 100 ? 2000 + Number(mdy[3]) : Number(mdy[3])) : fallbackYear;
+    return new Date(year, month, day).toISOString().slice(0, 10);
+  }
+
+  const dayMonth = text.match(/^(\d{1,2})[-\s]?([A-Za-z]{3,9})(?:[-\s]?(\d{2,4}))?$/);
+  if (dayMonth) {
+    const day = Number(dayMonth[1]);
+    const month = MONTHS[dayMonth[2].toLowerCase()];
+    if (month === undefined) return null;
+    const year = dayMonth[3] ? (Number(dayMonth[3]) < 100 ? 2000 + Number(dayMonth[3]) : Number(dayMonth[3])) : fallbackYear;
+    return new Date(year, month, day).toISOString().slice(0, 10);
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  return null;
+}
+
+function worksheetRows(ws: XLSX.WorkSheet): Cell[][] {
+  return XLSX.utils.sheet_to_json<Cell[]>(ws, { header: 1, defval: null, raw: true });
+}
+
+function parseForecastWorkbook(wb: XLSX.WorkBook, fileName: string): ForecastDemand[] {
+  const fallbackYear = inferYear(fileName, wb.SheetNames);
+  const demand: ForecastDemand[] = [];
+
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws) continue;
+    const rows = worksheetRows(ws);
+    if (rows.length < 2) continue;
+
+    let headerIdx = -1;
+    let dateCols: Array<{ col: number; date: string }> = [];
+    for (let r = 0; r < Math.min(rows.length, 10); r++) {
+      const row = rows[r] || [];
+      const first = cellText(row[0]).toLowerCase();
+      const second = cellText(row[1]).toLowerCase();
+      const cols: Array<{ col: number; date: string }> = [];
+      for (let c = 2; c < row.length; c++) {
+        const date = parseDateHeader(row[c], fallbackYear);
+        if (date) cols.push({ col: c, date });
+      }
+      if ((first.includes("product") || second.includes("item")) && cols.length > 0) {
+        headerIdx = r;
+        dateCols = cols;
+        break;
+      }
+      if (cols.length >= 3 && headerIdx < 0) {
+        headerIdx = r;
+        dateCols = cols;
+      }
+    }
+    if (headerIdx < 0 || dateCols.length === 0) continue;
+
+    for (let r = headerIdx + 1; r < rows.length; r++) {
+      const row = rows[r] || [];
+      const product = cellText(row[0]);
+      const unitPn = normPart(cellText(row[1]));
+      if (!unitPn) continue;
+      const description = cellText(row[2]);
+      for (const dc of dateCols) {
+        const qty = cellNumber(row[dc.col]);
+        if (qty > 0) {
+          demand.push({ product, unitPn, description, date: dc.date, qty, sheet: sheetName });
+        }
+      }
+    }
+  }
+
+  return demand.sort((a, b) => a.date.localeCompare(b.date) || a.unitPn.localeCompare(b.unitPn));
+}
+
+function normalizeHeader(v: string): string {
+  return v.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function findHeaderIndex(headers: string[], patterns: RegExp[]): number {
+  return headers.findIndex((h) => patterns.some((p) => p.test(h)));
+}
+
+function parseUnitPwbWorkbook(wb: XLSX.WorkBook, pwbSet: Set<string>, filterToKnownPwbs: boolean): UnitPwbMapRow[] {
+  const out: UnitPwbMapRow[] = [];
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws) continue;
+    const rows = worksheetRows(ws).filter((r) => r.some((c) => cellText(c)));
+    if (rows.length < 2) continue;
+
+    let headerIdx = 0;
+    let unitIdx = -1;
+    let pwbIdx = -1;
+    let qtyIdx = -1;
+    for (let r = 0; r < Math.min(rows.length, 10); r++) {
+      const headers = rows[r].map((c) => normalizeHeader(cellText(c)));
+      const u = findHeaderIndex(headers, [/unit.*(pn|part|item)/, /parent.*(pn|part|item)/, /top.*(pn|part|item)/, /assembly.*(pn|part|item)/, /^unit$/]);
+      const p = findHeaderIndex(headers, [/pwb/, /pwa/, /board/, /component.*(pn|part|item)/, /^component$/, /^item$/]);
+      const q = findHeaderIndex(headers, [/qty.*per/, /quantity/, /^qty$/]);
+      if (u >= 0 && p >= 0 && u !== p) {
+        headerIdx = r;
+        unitIdx = u;
+        pwbIdx = p;
+        qtyIdx = q;
+        break;
+      }
+    }
+    if (unitIdx < 0 || pwbIdx < 0) {
+      headerIdx = 0;
+      unitIdx = 0;
+      pwbIdx = 1;
+      qtyIdx = 2;
+    }
+
+    for (let r = headerIdx + 1; r < rows.length; r++) {
+      const row = rows[r];
+      const unitPn = normPart(cellText(row[unitIdx]));
+      const pwbPn = normPart(cellText(row[pwbIdx]));
+      if (!unitPn || !pwbPn || unitPn === pwbPn) continue;
+      const knownPwb = pwbSet.has(pwbPn);
+      const looksPwb = /(^6F-|PWB|PWA)/i.test(pwbPn);
+      if (filterToKnownPwbs && pwbSet.size > 0 && !knownPwb) continue;
+      if (!filterToKnownPwbs && !knownPwb && !looksPwb) continue;
+      const rawQty = qtyIdx >= 0 ? cellNumber(row[qtyIdx]) : 0;
+      out.push({ unitPn, pwbPn, qtyPerUnit: rawQty > 0 ? rawQty : 1, sourceSheet: sheetName });
+    }
+  }
+
+  const dedup = new Map<string, UnitPwbMapRow>();
+  for (const r of out) {
+    const key = `${r.unitPn}||${r.pwbPn}`;
+    const ex = dedup.get(key);
+    if (ex) ex.qtyPerUnit += r.qtyPerUnit;
+    else dedup.set(key, { ...r });
+  }
+  return Array.from(dedup.values()).sort((a, b) => a.unitPn.localeCompare(b.unitPn) || a.pwbPn.localeCompare(b.pwbPn));
+}
+
+function downloadCsv(filename: string, rows: Array<Array<string | number>>) {
+  const cell = (v: string | number) => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+  const csv = rows.map((r) => r.map(cell).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export default function IopPage() {
+  const [forecastFile, setForecastFile] = useState("");
+  const [mappingFile, setMappingFile] = useState("");
+  const [forecastRows, setForecastRows] = useState<ForecastDemand[]>([]);
+  const [mappingRows, setMappingRows] = useState<UnitPwbMapRow[]>([]);
+  const [boms, setBoms] = useState<BomItem[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [filterToKnownPwbs, setFilterToKnownPwbs] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch("/api/boms");
+        const data = await res.json();
+        setBoms(data.items || []);
+      } catch { /* silent */ }
+    })();
+  }, []);
+
+  const pwbSet = useMemo(() => new Set(boms.filter((b) => (b.bom_type || "PWB") === "PWB").map((b) => normPart(b.assembly_pn))), [boms]);
+
+  async function readWorkbook(file: File): Promise<XLSX.WorkBook> {
+    const buf = await file.arrayBuffer();
+    return XLSX.read(buf, { cellDates: true });
+  }
+
+  async function loadForecast(file: File) {
+    setError(null);
+    setForecastFile(file.name);
+    try {
+      const wb = await readWorkbook(file);
+      const rows = parseForecastWorkbook(wb, file.name);
+      setForecastRows(rows);
+      if (rows.length === 0) setError("No dated demand quantities found. Expected Product in A, Unit PN in B, dates across row 1, quantities below those date columns.");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to parse forecast workbook");
+    }
+  }
+
+  async function loadMapping(file: File) {
+    setError(null);
+    setMappingFile(file.name);
+    try {
+      const wb = await readWorkbook(file);
+      const rows = parseUnitPwbWorkbook(wb, pwbSet, filterToKnownPwbs);
+      setMappingRows(rows);
+      if (rows.length === 0) setError("No Unit → PWB rows found. Try turning off 'Known PWB only' if this mapping file uses new PWB numbers not yet in Data Manager.");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to parse Unit/PWB breakdown");
+    }
+  }
+
+  const pwbDemand = useMemo<PwbDemand[]>(() => {
+    const map = new Map<string, UnitPwbMapRow[]>();
+    for (const m of mappingRows) {
+      if (!map.has(m.unitPn)) map.set(m.unitPn, []);
+      map.get(m.unitPn)!.push(m);
+    }
+    const rows: PwbDemand[] = [];
+    for (const f of forecastRows) {
+      const pwbs = map.get(f.unitPn) || [];
+      for (const p of pwbs) {
+        rows.push({
+          date: f.date,
+          product: f.product,
+          unitPn: f.unitPn,
+          unitQty: f.qty,
+          pwbPn: p.pwbPn,
+          qtyPerUnit: p.qtyPerUnit,
+          requiredQty: f.qty * p.qtyPerUnit,
+        });
+      }
+    }
+    return rows.sort((a, b) => a.date.localeCompare(b.date) || a.pwbPn.localeCompare(b.pwbPn) || a.unitPn.localeCompare(b.unitPn));
+  }, [forecastRows, mappingRows]);
+
+  const summary = useMemo(() => {
+    const agg = new Map<string, { date: string; pwbPn: string; requiredQty: number; unitCount: number }>();
+    for (const r of pwbDemand) {
+      const key = `${r.date}||${r.pwbPn}`;
+      const ex = agg.get(key);
+      if (ex) {
+        ex.requiredQty += r.requiredQty;
+        ex.unitCount += 1;
+      } else {
+        agg.set(key, { date: r.date, pwbPn: r.pwbPn, requiredQty: r.requiredQty, unitCount: 1 });
+      }
+    }
+    return Array.from(agg.values()).sort((a, b) => a.date.localeCompare(b.date) || a.pwbPn.localeCompare(b.pwbPn));
+  }, [pwbDemand]);
+
+  const missingUnits = useMemo(() => {
+    const mapped = new Set(mappingRows.map((m) => m.unitPn));
+    const miss = new Map<string, number>();
+    for (const f of forecastRows) {
+      if (!mapped.has(f.unitPn)) miss.set(f.unitPn, (miss.get(f.unitPn) || 0) + f.qty);
+    }
+    return Array.from(miss.entries()).map(([unitPn, qty]) => ({ unitPn, qty })).sort((a, b) => b.qty - a.qty);
+  }, [forecastRows, mappingRows]);
+
+  function exportDetail() {
+    downloadCsv("iop-pwb-demand-detail.csv", [
+      ["date", "product", "unit_pn", "unit_qty", "pwb_pn", "qty_per_unit", "required_qty"],
+      ...pwbDemand.map((r) => [r.date, r.product, r.unitPn, r.unitQty, r.pwbPn, r.qtyPerUnit, r.requiredQty]),
+    ]);
+  }
+
+  function exportSummary() {
+    downloadCsv("iop-pwb-demand-summary.csv", [
+      ["date", "pwb_pn", "required_qty", "source_unit_lines"],
+      ...summary.map((r) => [r.date, r.pwbPn, r.requiredQty, r.unitCount]),
+    ]);
+  }
+
+  return (
+    <main className="max-w-6xl mx-auto p-6 space-y-6 text-sm">
+      <div>
+        <h1 className="text-2xl font-bold">IOP</h1>
+        <p className="text-gray-600 mt-1">Forecast Unit-level demand, map it to PWB assemblies, then list which PWBs are needed by date.</p>
+      </div>
+
+      <section className="grid md:grid-cols-2 gap-4">
+        <div className="border rounded p-4 space-y-3">
+          <h2 className="font-semibold">1) Demand forecast</h2>
+          <p className="text-xs text-gray-500">Expected: Product in column A, Unit-level PN in column B, dates across row 1, quantities under date columns.</p>
+          <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadForecast(f); }} />
+          {forecastFile && <div className="text-xs text-gray-600">Loaded: {forecastFile}</div>}
+          <div className="text-xs">Parsed demand rows: <b>{forecastRows.length}</b></div>
+        </div>
+
+        <div className="border rounded p-4 space-y-3">
+          <h2 className="font-semibold">2) Unit → PWB breakdown</h2>
+          <p className="text-xs text-gray-500">Upload the BOM breakdown when ready. I’ll detect Unit/Parent PN, PWB/Board/Component PN, and optional qty-per-unit columns.</p>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={filterToKnownPwbs}
+              onChange={(e) => {
+                setFilterToKnownPwbs(e.target.checked);
+                setMappingRows([]);
+                setMappingFile("");
+              }}
+            />
+            Known PWB only ({pwbSet.size} PWB assemblies from Data Manager)
+          </label>
+          <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadMapping(f); }} />
+          {mappingFile && <div className="text-xs text-gray-600">Loaded: {mappingFile}</div>}
+          <div className="text-xs">Mapped Unit/PWB rows: <b>{mappingRows.length}</b></div>
+        </div>
+      </section>
+
+      {error && <div className="border border-red-300 bg-red-50 text-red-700 rounded p-3">{error}</div>}
+
+      <section className="grid md:grid-cols-4 gap-3">
+        <div className="border rounded p-3">Forecast rows: <b>{forecastRows.length}</b></div>
+        <div className="border rounded p-3">Unit/PWB mappings: <b>{mappingRows.length}</b></div>
+        <div className="border rounded p-3">PWB demand lines: <b>{pwbDemand.length}</b></div>
+        <div className="border rounded p-3">Unmapped Unit PNs: <b>{missingUnits.length}</b></div>
+      </section>
+
+      {summary.length > 0 && (
+        <section className="border rounded p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="font-semibold">PWB Demand by Need Date</h2>
+            <div className="flex gap-2">
+              <button className="rounded border px-3 py-1" onClick={exportSummary}>Export Summary CSV</button>
+              <button className="rounded border px-3 py-1" onClick={exportDetail}>Export Detail CSV</button>
+            </div>
+          </div>
+          <div className="overflow-auto max-h-[520px]">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="text-left border-b">
+                  <th className="p-2">Need Date</th>
+                  <th className="p-2">PWB</th>
+                  <th className="p-2">Required Qty</th>
+                  <th className="p-2">Source Lines</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.map((r) => (
+                  <tr key={`${r.date}-${r.pwbPn}`} className="border-b">
+                    <td className="p-2 whitespace-nowrap">{r.date}</td>
+                    <td className="p-2 font-mono">{r.pwbPn}</td>
+                    <td className="p-2 font-semibold">{r.requiredQty}</td>
+                    <td className="p-2">{r.unitCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {forecastRows.length > 0 && missingUnits.length > 0 && (
+        <section className="border border-amber-300 bg-amber-50 rounded p-4 space-y-2">
+          <h2 className="font-semibold text-amber-900">Unit PNs waiting for PWB breakdown</h2>
+          <p className="text-xs text-amber-800">These forecast items do not have Unit → PWB mapping yet.</p>
+          <div className="overflow-auto max-h-64 bg-white/60 rounded">
+            <table className="w-full text-xs">
+              <thead><tr className="text-left border-b"><th className="p-2">Unit PN</th><th className="p-2">Total Forecast Qty</th></tr></thead>
+              <tbody>{missingUnits.map((m) => <tr key={m.unitPn} className="border-b"><td className="p-2 font-mono">{m.unitPn}</td><td className="p-2">{m.qty}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {forecastRows.length > 0 && (
+        <section className="border rounded p-4 space-y-2">
+          <h2 className="font-semibold">Forecast Preview</h2>
+          <div className="overflow-auto max-h-72">
+            <table className="w-full text-xs">
+              <thead><tr className="text-left border-b"><th className="p-2">Date</th><th className="p-2">Product</th><th className="p-2">Unit PN</th><th className="p-2">Qty</th><th className="p-2">Sheet</th></tr></thead>
+              <tbody>{forecastRows.slice(0, 200).map((r, i) => <tr key={`${r.sheet}-${r.unitPn}-${r.date}-${i}`} className="border-b"><td className="p-2">{r.date}</td><td className="p-2">{r.product}</td><td className="p-2 font-mono">{r.unitPn}</td><td className="p-2">{r.qty}</td><td className="p-2">{r.sheet}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </main>
+  );
+}

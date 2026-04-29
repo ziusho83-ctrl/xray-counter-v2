@@ -7,6 +7,7 @@ const DataManager = lazy(() => import("./data/page"));
 const MultiBom = lazy(() => import("./multi-bom/page"));
 const MpsImport = lazy(() => import("./mps/page"));
 const Sourcing = lazy(() => import("./sourcing/page"));
+const Iop = lazy(() => import("./iop/page"));
 
 const TABS = [
   { key: "run-check", label: "Run Check" },
@@ -14,6 +15,7 @@ const TABS = [
   { key: "multi-bom", label: "Multi-BOM Analysis" },
   { key: "mps", label: "MPS Import" },
   { key: "sourcing", label: "Sourcing" },
+  { key: "iop", label: "IOP" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -78,6 +80,11 @@ export default function TabShell() {
         {mounted.has("sourcing") && (
           <div style={{ display: active === "sourcing" ? "block" : "none" }}>
             <Suspense fallback={fallback}><Sourcing /></Suspense>
+          </div>
+        )}
+        {mounted.has("iop") && (
+          <div style={{ display: active === "iop" ? "block" : "none" }}>
+            <Suspense fallback={fallback}><Iop /></Suspense>
           </div>
         )}
       </div>
