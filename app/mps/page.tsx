@@ -593,17 +593,23 @@ export default function MpsPage() {
         const iopSheetName = wb.SheetNames.find((s) => s.toUpperCase().startsWith("IOP"));
         if (!iopSheetName) { setParseError((prev) => (prev ? prev + "; " : "") + "No IOP sheet found"); return; }
         const ws = wb.Sheets[iopSheetName];
-        const raw: (string | number | Date | null)[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
+        // Use cellDates:true + raw:true so date headers come back as Date objects
+        const raw: (string | number | Date | null | undefined)[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
         if (raw.length < 2) return;
 
         const header = raw[0];
-        // Find date columns: headers that look like dates
+        // Find date columns: headers that are Date objects or parseable date strings
         const dateCols: Array<{ idx: number; date: Date }> = [];
         for (let i = 0; i < (header?.length || 0); i++) {
-          const h = header[i];
-          if (h instanceof Date) {
+          const h = header?.[i];
+          if (h instanceof Date && !isNaN(h.getTime())) {
             dateCols.push({ idx: i, date: h });
-          } else if (typeof h === "string" || typeof h === "number") {
+          } else if (typeof h === "number" && h > 40000 && h < 60000) {
+            // Excel serial date number — convert to JS Date
+            const epoch = new Date(Date.UTC(1899, 11, 30));
+            const d = new Date(epoch.getTime() + h * 86400000);
+            if (!isNaN(d.getTime())) dateCols.push({ idx: i, date: d });
+          } else if (typeof h === "string") {
             const d = new Date(h);
             if (!isNaN(d.getTime()) && d.getFullYear() >= 2020 && d.getFullYear() <= 2040) {
               dateCols.push({ idx: i, date: d });
@@ -611,6 +617,7 @@ export default function MpsPage() {
           }
         }
         dateCols.sort((a, b) => a.date.getTime() - b.date.getTime());
+        console.log("[IOP] date columns found:", dateCols.length, dateCols.map(dc => dc.date.toISOString().slice(0,10)));
 
         const lookup = new Map<string, { nextDemand: string; schedule: string }>();
         for (let ri = 1; ri < raw.length; ri++) {
@@ -644,6 +651,7 @@ export default function MpsPage() {
           }
         }
 
+        console.log("[IOP] parsed items:", lookup.size, [...lookup.entries()].slice(0, 10).map(([k,v]) => `${k} -> ${v.nextDemand}`));
         setIopLookup(lookup);
         setIopFileName(`${file.name} (${lookup.size} items)`);
       } catch (err) {
@@ -738,6 +746,10 @@ export default function MpsPage() {
   // Patch IOP next-demand onto matched rows whenever the IOP lookup changes
   useEffect(() => {
     if (iopLookup.size === 0) return;
+    console.log("[IOP] patching", iopLookup.size, "IOP items onto", matched.length, "matched rows");
+    const topPns = new Set(matched.map(m => m.top_pn));
+    console.log("[IOP] unique top_pn values in matched:", [...topPns]);
+    console.log("[IOP] IOP keys:", [...iopLookup.keys()]);
     setMatched((prev) => prev.map((m) => {
       const iopEntry = iopLookup.get(m.top_pn);
       return { ...m, iop_next_demand: iopEntry?.nextDemand || "" };
