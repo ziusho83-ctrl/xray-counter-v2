@@ -13,6 +13,7 @@ type StockroomResult = {
   inspection_qty: number;
   stockroom_locations: Array<{ bin_location: string; lot_number: string; qty: number }>;
   bom_run: string;
+  mount_type?: "SMT" | "TH";
 };
 
 type ReadinessStatus = "clear-xray" | "clear-with-stockroom" | "not-clear";
@@ -76,6 +77,7 @@ export default function MultiBomPage() {
   const [stockroomError, setStockroomError] = useState<string | null>(null);
   const [stockroomSort, setStockroomSort] = useState<{ col: string; asc: boolean }>({ col: "shortage_qty", asc: false });
   const [floorStockSet, setFloorStockSet] = useState<Set<string>>(new Set());
+  const [smtPartsSet, setSmtPartsSet] = useState<Set<string>>(new Set());
   const [readiness, setReadiness] = useState<ReadinessRow[] | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(false);
   const [readinessError, setReadinessError] = useState<string | null>(null);
@@ -98,6 +100,15 @@ export default function MultiBomPage() {
       const res = await fetch("/api/import/open-po");
       const data = await res.json();
       setOpenPOs(data.items || []);
+    })();
+    void (async () => {
+      try {
+        const res = await fetch("/api/import/smt-parts");
+        const data = await res.json();
+        setSmtPartsSet(new Set((data.items || []).map((s: { component_pn: string }) => s.component_pn)));
+      } catch {
+        /* silent */
+      }
     })();
   }, []);
 
@@ -192,7 +203,10 @@ export default function MultiBomPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Stockroom check failed");
-      setStockroomResults(data.results || []);
+      setStockroomResults((data.results || []).map((r: StockroomResult) => ({
+        ...r,
+        mount_type: smtPartsSet.has(r.part) ? "SMT" as const : "TH" as const,
+      })));
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Unknown error";
       setStockroomError(message);
@@ -448,6 +462,7 @@ export default function MultiBomPage() {
         case "bom_run": va = a.bom_run; vb = b.bom_run; break;
         case "shortage_qty": va = a.shortage_qty; vb = b.shortage_qty; break;
         case "confirmed_qty": va = a.confirmed_qty ?? a.stockroom_available; vb = b.confirmed_qty ?? b.stockroom_available; break;
+        case "mount_type": va = a.mount_type || "TH"; vb = b.mount_type || "TH"; break;
         case "inspection_qty": va = a.inspection_qty ?? 0; vb = b.inspection_qty ?? 0; break;
         case "shared": va = sharedPartsInfo.has(a.part) ? 1 : 0; vb = sharedPartsInfo.has(b.part) ? 1 : 0; break;
         case "status": va = statusRank(a); vb = statusRank(b); break;
@@ -523,13 +538,14 @@ export default function MultiBomPage() {
 
   function exportStockroomCsv() {
     if (!stockroomResults) return;
-    const header = ["part", "bom_run", "shortage", "confirmed_stockroom_qty", "in_inspection", "shared_boms", "contested", "locations"];
+    const header = ["part", "mount_type", "bom_run", "shortage", "confirmed_stockroom_qty", "in_inspection", "shared_boms", "contested", "locations"];
     const lines = stockroomResults.map((s) => {
       const shared = sharedPartsInfo.get(s.part);
       const conf = s.confirmed_qty ?? s.stockroom_available;
       const insp = s.inspection_qty ?? 0;
       return [
         s.part,
+        s.mount_type || "TH",
         s.bom_run,
         s.shortage_qty,
         conf,
@@ -1046,6 +1062,7 @@ export default function MultiBomPage() {
                     <tr className="text-left border-b">
                       <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleStockroomSort("status")}>Status{sortIndicator("status")}</th>
                       <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleStockroomSort("part")}>Part{sortIndicator("part")}</th>
+                      <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleStockroomSort("mount_type")}>Type{sortIndicator("mount_type")}</th>
                       <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleStockroomSort("bom_run")}>BOM Run{sortIndicator("bom_run")}</th>
                       <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleStockroomSort("shortage_qty")}>Shortage{sortIndicator("shortage_qty")}</th>
                       <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleStockroomSort("confirmed_qty")}>Stockroom Qty{sortIndicator("confirmed_qty")}</th>
@@ -1093,6 +1110,11 @@ export default function MultiBomPage() {
                                 {r.part}
                                 {isFI && <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">FI</span>}
                               </td>
+                              <td className="p-2">
+                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${(r.mount_type || "TH") === "SMT" ? "bg-blue-100 text-blue-800" : "bg-gray-100 text-gray-700"}`}>
+                                  {r.mount_type || "TH"}
+                                </span>
+                              </td>
                               <td className="p-2">{r.bom_run}</td>
                               <td className="p-2">{isFI ? "—" : r.shortage_qty}</td>
                               <td className="p-2">{isFI ? "—" : confirmed}</td>
@@ -1125,7 +1147,7 @@ export default function MultiBomPage() {
                             </tr>
                             {poExpanded && !isFI && (poList.length > 0 ? poList.map((po, poIdx) => (
                               <tr key={`${poKey}-${po.po}-${po.line}-${poIdx}`} className="border-b bg-indigo-50/70 text-xs">
-                                <td className="p-2" colSpan={9}>
+                                <td className="p-2" colSpan={10}>
                                   <span className="font-semibold mr-4">Vendor: {po.vendor || "—"}</span>
                                   <span className="mr-4">PO: {po.po}{po.line ? ` / Line ${po.line}` : ""}</span>
                                   <span className="mr-4">Qty Due: {po.qty_due}</span>
@@ -1135,7 +1157,7 @@ export default function MultiBomPage() {
                               </tr>
                             )) : (
                               <tr key={`${poKey}-none`} className="border-b bg-red-50/70 text-xs">
-                                <td className="p-2 text-red-600 font-medium" colSpan={9}>⚠️ Part currently has not been ordered</td>
+                                <td className="p-2 text-red-600 font-medium" colSpan={10}>⚠️ Part currently has not been ordered</td>
                               </tr>
                             ))}
                           </Fragment>
