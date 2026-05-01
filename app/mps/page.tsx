@@ -17,6 +17,7 @@ type MpsRow = {
   due_date: string;
   remarks: string;
   top_pn: string;
+  ancestors: string[];  // full chain of parent PNs from Lvl 0 down
 };
 
 type MatchedBoard = {
@@ -30,6 +31,7 @@ type MatchedBoard = {
   priority: number;
   mps_level: number;
   top_pn: string;
+  ancestors: string[];
   iop_next_demand: string;
 };
 
@@ -465,6 +467,8 @@ export default function MpsPage() {
     let lastLevel = -1;
     let lastDesc = "";
     let currentTopPn = "";
+    // Stack of parent PNs at each level: ancestorStack[0] = Lvl 0 PN, [1] = Lvl 1 PN, etc.
+    const ancestorStack: string[] = [];
     for (let i = headerIdx + 1; i < raw.length; i++) {
       const row = raw[i];
       if (!row || row.every((c) => c === null || c === "")) continue;
@@ -502,9 +506,14 @@ export default function MpsPage() {
         if (level === 0) {
           currentTopPn = part;
         }
+        // Update ancestor stack: set this level's PN and clear deeper levels
+        ancestorStack[level] = part;
+        ancestorStack.length = level + 1;
       }
 
       const desc = descIdx >= 0 ? String(row[descIdx] || "").trim() : "";
+      // Build ancestors list: all PNs from Lvl 0 up to (but not including) current level
+      const ancestors = ancestorStack.slice(0, Math.max(0, level)).filter(Boolean);
 
       parsed.push({
         level,
@@ -518,9 +527,24 @@ export default function MpsPage() {
         due_date: dueIdx >= 0 ? String(row[dueIdx] || "").trim() : "",
         remarks: remarksIdx >= 0 ? String(row[remarksIdx] || "").trim() : "",
         top_pn: currentTopPn,
+        ancestors,
       });
     }
     return parsed;
+  }
+
+  // Look up IOP demand by walking the ancestor chain (top_pn first, then each child level)
+  function lookupIop(lookup: Map<string, { nextDemand: string; schedule: string }>, topPn: string, ancestors: string[]): string {
+    // Try top_pn first
+    const direct = lookup.get(topPn);
+    if (direct) return direct.nextDemand;
+    // Walk ancestors from top (Lvl 0) to bottom
+    for (const anc of ancestors) {
+      const hit = lookup.get(anc);
+      if (hit) return hit.nextDemand;
+    }
+    // Also try the part itself (if it's listed in IOP directly)
+    return "";
   }
 
   function parseSheetsFromWorkbooks(workbooks: Array<{ name: string; wb: XLSX.WorkBook }>, selectedLabels: Set<string>) {
@@ -567,7 +591,8 @@ export default function MpsPage() {
           priority: 1,
           mps_level: mps.level,
           top_pn: mps.top_pn || "",
-          iop_next_demand: iopLookup.get(mps.top_pn || "")?.nextDemand || "",
+          ancestors: mps.ancestors || [],
+          iop_next_demand: lookupIop(iopLookup, mps.top_pn || "", mps.ancestors || []),
         });
       }
     }
@@ -779,12 +804,10 @@ export default function MpsPage() {
   useEffect(() => {
     if (iopLookup.size === 0) return;
     console.log("[IOP] patching", iopLookup.size, "IOP items onto", matched.length, "matched rows");
-    const topPns = new Set(matched.map(m => m.top_pn));
-    console.log("[IOP] unique top_pn values in matched:", [...topPns]);
     console.log("[IOP] IOP keys:", [...iopLookup.keys()]);
     setMatched((prev) => prev.map((m) => {
-      const iopEntry = iopLookup.get(m.top_pn);
-      return { ...m, iop_next_demand: iopEntry?.nextDemand || "" };
+      const demand = lookupIop(iopLookup, m.top_pn, m.ancestors || []);
+      return { ...m, iop_next_demand: demand };
     }));
   }, [iopLookup]);
 
