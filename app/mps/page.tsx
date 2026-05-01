@@ -16,6 +16,7 @@ type MpsRow = {
   ord_qty: number;
   due_date: string;
   remarks: string;
+  top_pn: string;
 };
 
 type MatchedBoard = {
@@ -28,6 +29,8 @@ type MatchedBoard = {
   revisions: string[];
   priority: number;
   mps_level: number;
+  top_pn: string;
+  iop_next_demand: string;
 };
 
 type WoPhaseBadge = {
@@ -137,6 +140,8 @@ export default function MpsPage() {
   const [expandedPoRows, setExpandedPoRows] = useState<Set<string>>(new Set());
   const [showCompletedWos, setShowCompletedWos] = useState(false);
   const [bomTypeFilter, setBomTypeFilter] = useState<"ALL" | "PWB" | "HARNESS">("ALL");
+  const [iopLookup, setIopLookup] = useState<Map<string, { nextDemand: string; schedule: string }>>(new Map());
+  const [iopFileName, setIopFileName] = useState<string>("");
 
   // Load BOM database, floor stock, and WO status from Google Sheet
   useEffect(() => {
@@ -428,6 +433,7 @@ export default function MpsPage() {
     let lastPart = "";
     let lastLevel = -1;
     let lastDesc = "";
+    let currentTopPn = "";
     for (let i = headerIdx + 1; i < raw.length; i++) {
       const row = raw[i];
       if (!row || row.every((c) => c === null || c === "")) continue;
@@ -461,6 +467,10 @@ export default function MpsPage() {
         lastPart = part;
         lastLevel = level;
         lastDesc = descIdx >= 0 ? String(row[descIdx] || "").trim() : "";
+        // Track current top-level (Lvl 0) part number
+        if (level === 0) {
+          currentTopPn = part;
+        }
       }
 
       const desc = descIdx >= 0 ? String(row[descIdx] || "").trim() : "";
@@ -476,6 +486,7 @@ export default function MpsPage() {
         ord_qty: ordQtyIdx >= 0 ? Number(row[ordQtyIdx] || 0) : 0,
         due_date: dueIdx >= 0 ? String(row[dueIdx] || "").trim() : "",
         remarks: remarksIdx >= 0 ? String(row[remarksIdx] || "").trim() : "",
+        top_pn: currentTopPn,
       });
     }
     return parsed;
@@ -524,6 +535,8 @@ export default function MpsPage() {
           revisions,
           priority: 1,
           mps_level: mps.level,
+          top_pn: mps.top_pn || "",
+          iop_next_demand: "",
         });
       }
     }
@@ -568,6 +581,76 @@ export default function MpsPage() {
       map.set(wo, status);
     }
     return map;
+  }
+
+  function handleIopFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const wb = XLSX.read(data, { type: "array", cellDates: true });
+        // Find the IOP sheet (name starts with "IOP")
+        const iopSheetName = wb.SheetNames.find((s) => s.toUpperCase().startsWith("IOP"));
+        if (!iopSheetName) { setParseError((prev) => (prev ? prev + "; " : "") + "No IOP sheet found"); return; }
+        const ws = wb.Sheets[iopSheetName];
+        const raw: (string | number | Date | null)[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
+        if (raw.length < 2) return;
+
+        const header = raw[0];
+        // Find date columns: headers that look like dates
+        const dateCols: Array<{ idx: number; date: Date }> = [];
+        for (let i = 0; i < (header?.length || 0); i++) {
+          const h = header[i];
+          if (h instanceof Date) {
+            dateCols.push({ idx: i, date: h });
+          } else if (typeof h === "string" || typeof h === "number") {
+            const d = new Date(h);
+            if (!isNaN(d.getTime()) && d.getFullYear() >= 2020 && d.getFullYear() <= 2040) {
+              dateCols.push({ idx: i, date: d });
+            }
+          }
+        }
+        dateCols.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+        const lookup = new Map<string, { nextDemand: string; schedule: string }>();
+        for (let ri = 1; ri < raw.length; ri++) {
+          const row = raw[ri];
+          if (!row || !row[1]) continue;
+          const itemRaw = String(row[1]).trim();
+          // Extract canonical PN: everything before first " - " or first space
+          const pn = itemRaw.split(/\s+-\s+/)[0].split(/\s+/)[0].trim();
+          if (!pn || !pn.includes("-")) continue;
+
+          let firstDemandDate: Date | null = null;
+          const demandParts: string[] = [];
+          for (const dc of dateCols) {
+            const val = row[dc.idx];
+            const qty = typeof val === "number" ? val : parseFloat(String(val || "0"));
+            if (!isNaN(qty) && qty > 0) {
+              if (!firstDemandDate) firstDemandDate = dc.date;
+              const mm = String(dc.date.getMonth() + 1).padStart(2, "0");
+              const dd = String(dc.date.getDate()).padStart(2, "0");
+              demandParts.push(`${Math.round(qty)}×${mm}-${dd}`);
+            }
+          }
+
+          if (firstDemandDate) {
+            const dateStr = firstDemandDate.toISOString().slice(0, 10);
+            // Only update if this is earlier than existing (same PN can appear multiple rows)
+            const existing = lookup.get(pn);
+            if (!existing || dateStr < existing.nextDemand) {
+              lookup.set(pn, { nextDemand: dateStr, schedule: demandParts.join(", ") });
+            }
+          }
+        }
+
+        setIopLookup(lookup);
+        setIopFileName(`${file.name} (${lookup.size} items)`);
+      } catch (err) {
+        setParseError((prev) => (prev ? prev + "; " : "") + `IOP (${file.name}): ${err instanceof Error ? err.message : "Failed to parse"}`);
+      }
+    };
+    reader.readAsArrayBuffer(file);
   }
 
   function handleWoSmtStatusFile(file: File) {
@@ -651,6 +734,15 @@ export default function MpsPage() {
     setExpandedReadiness(new Set());
     setCollapsedBoms(new Set());
   }, [matched]);
+
+  // Patch IOP next-demand onto matched rows whenever the IOP lookup changes
+  useEffect(() => {
+    if (iopLookup.size === 0) return;
+    setMatched((prev) => prev.map((m) => {
+      const iopEntry = iopLookup.get(m.top_pn);
+      return { ...m, iop_next_demand: iopEntry?.nextDemand || "" };
+    }));
+  }, [iopLookup]);
 
   function buildAnalysisPlanRunId(m: MatchedBoard, idx: number) {
     return `${m.part}__${m.revision}__${m.order || "MRP"}__${idx}`;
@@ -1290,6 +1382,27 @@ export default function MpsPage() {
         </div>
       </section>
 
+      <section className="border rounded p-3 space-y-2">
+        <h2 className="font-semibold">IOP Demand Schedule</h2>
+        <p className="text-xs text-gray-500">Upload the IOP Excel file to map demand dates onto matched board assemblies via their top-level unit part number.</p>
+        <div className="flex items-center gap-2">
+          {iopFileName ? (
+            <span className="text-xs">✅ {iopFileName}</span>
+          ) : (
+            <span className="text-xs text-gray-400">No IOP file loaded</span>
+          )}
+          <div
+            className="border border-dashed rounded px-3 py-1 text-xs cursor-pointer hover:border-blue-400 transition-colors"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleIopFile(f); }}
+            onClick={() => document.getElementById("iop-file-input")?.click()}
+          >
+            <input id="iop-file-input" type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleIopFile(f); }} />
+            {iopFileName ? "Replace" : "Upload IOP"}
+          </div>
+        </div>
+      </section>
+
       {openPOs.length > 0 && (
         <section className="border rounded p-3 space-y-2">
           <h2 className="font-semibold">Open Purchase Orders</h2>
@@ -1397,6 +1510,7 @@ export default function MpsPage() {
                   <th className="p-2">Description</th>
                   <th className="p-2">Work Order</th>
                   <th className="p-2">Phase</th>
+                  <th className="p-2">IOP Demand</th>
                   <th className="p-2">Ord Qty</th>
                   <th className="p-2">MPS Short</th>
                   <th className="p-2">Revision</th>
@@ -1441,6 +1555,15 @@ export default function MpsPage() {
                               const badge = getWoPhaseBadge(m.order || "");
                               return <span className={badge.className}>{badge.label}</span>;
                             })()}
+                          </td>
+                          <td className="p-2 text-xs">
+                            {m.iop_next_demand ? (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800">
+                                {new Date(m.iop_next_demand + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                              </span>
+                            ) : (
+                              <span className="text-gray-300">—</span>
+                            )}
                           </td>
                           <td className="p-2 text-gray-500">{m.qty}</td>
                           <td className="p-2 text-gray-500">{m.short}</td>
@@ -1493,6 +1616,15 @@ export default function MpsPage() {
                         <td className="p-2 text-xs">{first.description}</td>
                         <td className="p-2 text-xs text-gray-400">{group.indices.length} lines</td>
                         <td className="p-2"></td>
+                        <td className="p-2 text-xs">
+                          {first.iop_next_demand ? (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800">
+                              {new Date(first.iop_next_demand + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
                         <td className="p-2 font-semibold">{totalQty}</td>
                         <td className="p-2"></td>
                         <td className="p-2">
@@ -1551,6 +1683,15 @@ export default function MpsPage() {
                                 const badge = getWoPhaseBadge(m.order || "");
                                 return <span className={badge.className}>{badge.label}</span>;
                               })()}
+                            </td>
+                            <td className="p-2 text-xs">
+                              {m.iop_next_demand ? (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800">
+                                  {new Date(m.iop_next_demand + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                </span>
+                              ) : (
+                                <span className="text-gray-300">—</span>
+                              )}
                             </td>
                             <td className="p-2 text-gray-500">{m.qty}</td>
                             <td className="p-2 text-gray-500">{m.short}</td>
