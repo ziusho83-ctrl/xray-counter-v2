@@ -1182,6 +1182,7 @@ export default function MpsPage() {
       // Collect shortage parts from individual plans so each WO/MRP run stays separate.
       const seen = new Set<string>();
       const shortages: Array<{ part: string; shortage: number; bom_run: string }> = [];
+      const floorStockShortages: StockroomResult[] = [];
       for (const plan of result.plans) {
         const bomRun = plan.run_label || `${plan.assembly_pn} rev ${plan.revision}`;
         // Check if this WO is SMT-complete
@@ -1192,11 +1193,22 @@ export default function MpsPage() {
         for (const s of plan.shortages) {
           // Skip SMT parts if WO is SMT-complete (already consumed)
           if (woSmtDone && smtPartsSet.has(s.part)) continue;
-          // Skip floor stock parts
-          if (floorStockSet.has(s.part)) continue;
           const key = `${s.part}||${bomRun}`;
-          if (!seen.has(key)) {
-            seen.add(key);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (floorStockSet.has(s.part)) {
+            // Keep FI/floor-stock parts visible in Stockroom Availability with a synthetic row
+            floorStockShortages.push({
+              part: s.part,
+              shortage_qty: s.shortage,
+              stockroom_available: s.shortage,
+              confirmed_qty: s.shortage,
+              inspection_qty: 0,
+              stockroom_locations: [],
+              bom_run: bomRun,
+              mount_type: smtPartsSet.has(s.part) ? "SMT" as const : "TH" as const,
+            });
+          } else {
             shortages.push({ part: s.part, shortage: s.shortage, bom_run: bomRun });
           }
         }
@@ -1208,10 +1220,13 @@ export default function MpsPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Stockroom check failed");
-      const srResults: StockroomResult[] = (data.results || []).map((r: StockroomResult) => ({
-        ...r,
-        mount_type: smtPartsSet.has(r.part) ? "SMT" as const : "TH" as const,
-      }));
+      const srResults: StockroomResult[] = [
+        ...floorStockShortages,
+        ...((data.results || []).map((r: StockroomResult) => ({
+          ...r,
+          mount_type: smtPartsSet.has(r.part) ? "SMT" as const : "TH" as const,
+        }))),
+      ];
       setStockroomResults(srResults);
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Unknown error";
