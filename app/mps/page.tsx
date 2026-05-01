@@ -142,6 +142,14 @@ export default function MpsPage() {
   const [bomTypeFilter, setBomTypeFilter] = useState<"ALL" | "PWB" | "HARNESS">("ALL");
   const [iopLookup, setIopLookup] = useState<Map<string, { nextDemand: string; schedule: string }>>(new Map());
   const [iopFileName, setIopFileName] = useState<string>("");
+  const [matchedSort, setMatchedSort] = useState<{ col: string; asc: boolean }>({ col: "", asc: true });
+
+  function toggleMatchedSort(col: string) {
+    setMatchedSort((prev) => ({
+      col,
+      asc: prev.col === col ? !prev.asc : true,
+    }));
+  }
 
   // Load BOM database, floor stock, and WO status from Google Sheet
   useEffect(() => {
@@ -337,6 +345,29 @@ export default function MpsPage() {
     }),
     [matched, isWoFullyComplete]
   );
+
+  const sortedMatchedIndexed = useMemo(() => {
+    if (!matchedSort.col) return activeMatchedIndexed;
+    const sorted = [...activeMatchedIndexed].sort((ea, eb) => {
+      const a = ea.m;
+      const b = eb.m;
+      let va: string | number = "";
+      let vb: string | number = "";
+      switch (matchedSort.col) {
+        case "part": va = a.part; vb = b.part; break;
+        case "description": va = a.description; vb = b.description; break;
+        case "order": va = a.order; vb = b.order; break;
+        case "qty": va = a.qty; vb = b.qty; break;
+        case "short": va = a.short; vb = b.short; break;
+        case "iop": va = a.iop_next_demand || "9999"; vb = b.iop_next_demand || "9999"; break;
+        case "priority": va = a.priority; vb = b.priority; break;
+        default: return 0;
+      }
+      if (typeof va === "number" && typeof vb === "number") return matchedSort.asc ? va - vb : vb - va;
+      return matchedSort.asc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+    });
+    return sorted;
+  }, [activeMatchedIndexed, matchedSort]);
 
   const handleFiles = useCallback(
     (files: File[]) => {
@@ -536,10 +567,11 @@ export default function MpsPage() {
           priority: 1,
           mps_level: mps.level,
           top_pn: mps.top_pn || "",
-          iop_next_demand: "",
+          iop_next_demand: iopLookup.get(mps.top_pn || "")?.nextDemand || "",
         });
       }
     }
+    console.log("[MPS] matched boards:", matches.length, "unique top_pns:", [...new Set(matches.map(m => m.top_pn))], "with IOP:", matches.filter(m => m.iop_next_demand).length);
     setMatched(matches);
   }
 
@@ -1518,16 +1550,30 @@ export default function MpsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left border-b">
-                  <th className="p-2">Part Number</th>
-                  <th className="p-2">Description</th>
-                  <th className="p-2">Work Order</th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleMatchedSort("part")}>
+                    Part Number {matchedSort.col === "part" ? (matchedSort.asc ? "▲" : "▼") : ""}
+                  </th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleMatchedSort("description")}>
+                    Description {matchedSort.col === "description" ? (matchedSort.asc ? "▲" : "▼") : ""}
+                  </th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleMatchedSort("order")}>
+                    Work Order {matchedSort.col === "order" ? (matchedSort.asc ? "▲" : "▼") : ""}
+                  </th>
                   <th className="p-2">Phase</th>
-                  <th className="p-2">IOP Demand</th>
-                  <th className="p-2">Ord Qty</th>
-                  <th className="p-2">MPS Short</th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleMatchedSort("iop")}>
+                    IOP Demand {matchedSort.col === "iop" ? (matchedSort.asc ? "▲" : "▼") : ""}
+                  </th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleMatchedSort("qty")}>
+                    Ord Qty {matchedSort.col === "qty" ? (matchedSort.asc ? "▲" : "▼") : ""}
+                  </th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleMatchedSort("short")}>
+                    MPS Short {matchedSort.col === "short" ? (matchedSort.asc ? "▲" : "▼") : ""}
+                  </th>
                   <th className="p-2">Revision</th>
                   <th className="p-2">Target Qty</th>
-                  <th className="p-2">Priority</th>
+                  <th className="p-2 cursor-pointer select-none hover:bg-gray-50" onClick={() => toggleMatchedSort("priority")}>
+                    Priority {matchedSort.col === "priority" ? (matchedSort.asc ? "▲" : "▼") : ""}
+                  </th>
                   <th className="p-2">Action</th>
                 </tr>
               </thead>
@@ -1536,7 +1582,7 @@ export default function MpsPage() {
                   // Group matched rows by part number
                   const groups: Array<{ part: string; indices: number[] }> = [];
                   const partGroupMap = new Map<string, number>();
-                  activeMatchedIndexed.forEach(({ m }, i) => {
+                  sortedMatchedIndexed.forEach(({ m }, i) => {
                     const existing = partGroupMap.get(m.part);
                     if (existing !== undefined) {
                       groups[existing].indices.push(i);
@@ -1549,9 +1595,9 @@ export default function MpsPage() {
                   return groups.flatMap((group) => {
                     const isGrouped = group.indices.length > 1;
                     const firstIdx = group.indices[0];
-                    const firstItem = activeMatchedIndexed[firstIdx];
+                    const firstItem = sortedMatchedIndexed[firstIdx];
                     const first = firstItem.m;
-                    const totalQty = group.indices.reduce((sum, idx) => sum + activeMatchedIndexed[idx].m.qty, 0);
+                    const totalQty = group.indices.reduce((sum, idx) => sum + sortedMatchedIndexed[idx].m.qty, 0);
 
                     if (!isGrouped) {
                       // Single row — render normally
@@ -1646,7 +1692,7 @@ export default function MpsPage() {
                               value={first.revision}
                                 onChange={(e) => {
                                   // Update revision for all rows in this group
-                                for (const idx of group.indices) updateMatched(activeMatchedIndexed[idx].idx, { revision: e.target.value });
+                                for (const idx of group.indices) updateMatched(sortedMatchedIndexed[idx].idx, { revision: e.target.value });
                                 }}
                             >
                               {first.revisions.map((r) => (
@@ -1666,7 +1712,7 @@ export default function MpsPage() {
                             step={1}
                             value={first.priority}
                             onChange={(e) => {
-                              for (const idx of group.indices) updateMatched(activeMatchedIndexed[idx].idx, { priority: Number(e.target.value || 1) });
+                              for (const idx of group.indices) updateMatched(sortedMatchedIndexed[idx].idx, { priority: Number(e.target.value || 1) });
                             }}
                           />
                         </td>
@@ -1676,14 +1722,14 @@ export default function MpsPage() {
                             onClick={() => {
                               // Remove all in group (reverse order to keep indices valid)
                               const sorted = [...group.indices].sort((a, b) => b - a);
-                              for (const idx of sorted) removeMatched(activeMatchedIndexed[idx].idx);
+                              for (const idx of sorted) removeMatched(sortedMatchedIndexed[idx].idx);
                             }}
                           >Remove All</button>
                         </td>
                       </tr>,
                       // Sub-rows for each WO
                       ...group.indices.map((idx) => {
-                        const entry = activeMatchedIndexed[idx];
+                        const entry = sortedMatchedIndexed[idx];
                         const m = entry.m;
                         return (
                           <tr key={`sub-${m.part}-${m.order}-${idx}`} className="border-b bg-white">
