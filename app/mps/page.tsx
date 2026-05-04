@@ -654,7 +654,13 @@ export default function MpsPage() {
         const raw: (string | number | Date | null | undefined)[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
         if (raw.length < 2) return;
 
-        const header = raw[0];
+        const header = raw[0] || [];
+        const normalizedHeader = header.map((h) => String(h ?? "").trim().toUpperCase());
+        const itemCol = normalizedHeader.findIndex((h) => h === "ITEM" || h === "PART" || h === "PART NUMBER");
+        if (itemCol < 0) {
+          setParseError((prev) => (prev ? prev + "; " : "") + `IOP (${file.name}): could not find Item column`);
+          return;
+        }
         // Find date columns: headers that are Date objects or parseable date strings
         const dateCols: Array<{ idx: number; date: Date }> = [];
         for (let i = 0; i < (header?.length || 0); i++) {
@@ -674,13 +680,13 @@ export default function MpsPage() {
           }
         }
         dateCols.sort((a, b) => a.date.getTime() - b.date.getTime());
-        console.log("[IOP] date columns found:", dateCols.length, dateCols.map(dc => dc.date.toISOString().slice(0,10)));
+        console.log("[IOP] item column:", itemCol, "date columns found:", dateCols.length, dateCols.map(dc => dc.date.toISOString().slice(0,10)));
 
         const lookup = new Map<string, { nextDemand: string; schedule: string }>();
         for (let ri = 1; ri < raw.length; ri++) {
           const row = raw[ri];
-          if (!row || !row[1]) continue;
-          const itemRaw = String(row[1]).trim();
+          if (!row || !row[itemCol]) continue;
+          const itemRaw = String(row[itemCol]).trim();
           // Extract canonical PN: everything before first " - " or first space
           const pn = itemRaw.split(/\s+-\s+/)[0].split(/\s+/)[0].trim();
           if (!pn || !pn.includes("-")) continue;

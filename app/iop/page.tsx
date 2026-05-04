@@ -155,14 +155,22 @@ function parseForecastWorkbook(wb: XLSX.WorkBook, fileName: string): ForecastDem
     }
     if (headerIdx < 0 || dateCols.length === 0) continue;
 
+    const rawHeaders = rows[headerIdx] || [];
+    const headers = rawHeaders.map((c) => normalizeHeader(cellText(c)));
+    const productIdx = findHeaderIndex(headers, [/^category$/, /^product$/, /^program$/]);
+    const itemIdx = findHeaderIndex(headers, [/^item$/, /^item_number$/, /^part_number$/]);
+    const descIdx = findHeaderIndex(headers, [/^description$/, /^desc$/]);
+    const avgUpIdx = findHeaderIndex(headers, [/^unit_price$/, /^avg_up$/, /^avg$/, /^price$/]);
+    const onHandIdx = findHeaderIndex(headers, [/^on_hand$/, /^onhand$/]);
+
     for (let r = headerIdx + 1; r < rows.length; r++) {
       const row = rows[r] || [];
-      const product = cellText(row[0]);
-      const unitPn = normPart(cellText(row[1]));
+      const product = productIdx >= 0 ? cellText(row[productIdx]) : "";
+      const unitPn = normPart(cellText(row[itemIdx >= 0 ? itemIdx : 1]));
       if (!unitPn) continue;
-      const description = cellText(row[2]);
-      const avgUp = cellText(row[3]);
-      const onHand = cellText(row[4]);
+      const description = descIdx >= 0 ? cellText(row[descIdx]) : "";
+      const avgUp = avgUpIdx >= 0 ? cellText(row[avgUpIdx]) : "";
+      const onHand = onHandIdx >= 0 ? cellText(row[onHandIdx]) : "";
       const sourceFields = {
         PRODUCT: product,
         ITEM: unitPn,
