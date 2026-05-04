@@ -141,7 +141,7 @@ export default function MpsPage() {
   const [expandedReadiness, setExpandedReadiness] = useState<Set<string>>(new Set());
   const [expandedPoRows, setExpandedPoRows] = useState<Set<string>>(new Set());
   const [showCompletedWos, setShowCompletedWos] = useState(false);
-  const [bomTypeFilter, setBomTypeFilter] = useState<"ALL" | "PWB" | "HARNESS">("ALL");
+  const [bomTypeFilter, setBomTypeFilter] = useState<"ALL" | "PWB" | "HARNESS">("PWB");
   const [iopLookup, setIopLookup] = useState<Map<string, { nextDemand: string; schedule: string }>>(new Map());
   const [iopFileName, setIopFileName] = useState<string>("");
   const [matchedSort, setMatchedSort] = useState<{ col: string; asc: boolean }>({ col: "", asc: true });
