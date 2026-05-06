@@ -221,7 +221,7 @@ export default function MpsPage() {
     // Auto-fetch TH WO status (Sheet 2 — new through-hole sheet)
     void (async () => {
       try {
-        const sheetUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR4TXVWYps8hlXBXfu-Rwdel5BOKkIEQnYON7R0HUusTD7IvbWuLuMPonrabbR9jw/pub?output=csv";
+        const sheetUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTc16sTzk62xCqHrqOy3qPkYH_RI66nphbMrCGQWhhY-gmwGgs_eKHOIU4_yjHjHjnBGMchHtK9-RD7/pub?output=csv";
         const res = await fetch(sheetUrl);
         if (!res.ok) return;
         const rows = parseCsvRows(await res.text());
