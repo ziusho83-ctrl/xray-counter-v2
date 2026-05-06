@@ -110,6 +110,11 @@ function csvCell(value: string | number | null | undefined): string {
   return '"' + text.replace(/"/g, '""') + '"';
 }
 
+/** Returns true when the SMT-sheet status indicates this WO has no SMT phase (TH-only). */
+function isThOnlyWo(smtStatusRaw: string): boolean {
+  return smtStatusRaw.trim().toLowerCase().startsWith("th");
+}
+
 export default function MpsPage() {
   const [boms, setBoms] = useState<BomItem[]>([]);
   const [mpsRows, setMpsRows] = useState<MpsRow[]>([]);
@@ -264,15 +269,21 @@ export default function MpsPage() {
   //   - TH sheet status is "completed" (meaning TH done = fully done)
   // A WO is "SMT complete" (partial) if SMT sheet = "Complete" but TH sheet != "completed"
   const isWoFullyComplete = useCallback((wo: string) => {
-    const smtStatus = (woSmtStatusMap.get(wo) || "").trim().toLowerCase();
+    const smtStatusRaw = woSmtStatusMap.get(wo) || "";
+    const smtStatus = smtStatusRaw.trim().toLowerCase();
     const thStatus = (woThStatusMap.get(wo) || "").trim().toLowerCase();
-    // Fully complete: SMT sheet says "complete" AND TH sheet says "completed"
-    // OR TH sheet alone says "completed" (TH done = all done)
+    // TH-only WOs (SMT sheet status starts with "TH") have no SMT phase —
+    // they are fully complete when the TH sheet says "completed".
+    if (isThOnlyWo(smtStatusRaw)) return thStatus === "completed";
+    // Normal WOs: SMT sheet says "complete" AND TH sheet says "completed".
     return smtStatus === "complete" && thStatus === "completed";
   }, [woSmtStatusMap, woThStatusMap]);
 
   const isWoSmtComplete = useCallback((wo: string) => {
-    const smtStatus = (woSmtStatusMap.get(wo) || "").trim().toLowerCase();
+    const smtStatusRaw = woSmtStatusMap.get(wo) || "";
+    // TH-only WOs have no SMT phase — SMT is implicitly complete.
+    if (isThOnlyWo(smtStatusRaw)) return true;
+    const smtStatus = smtStatusRaw.trim().toLowerCase();
     return smtStatus === "complete";
   }, [woSmtStatusMap]);
 
@@ -291,6 +302,27 @@ export default function MpsPage() {
     const thStatus = thStatusRaw.toLowerCase();
     const smtDone = smtStatus === "complete";
     const thDone = thStatus === "completed";
+    const thOnly = isThOnlyWo(smtStatusRaw);
+
+    // TH-only WOs have no SMT phase — badge is determined purely by the TH sheet.
+    if (thOnly) {
+      if (thDone) {
+        return {
+          label: "✅ Done",
+          className: "text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-800",
+        };
+      }
+      if (thStatusRaw) {
+        return {
+          label: `TH ${thStatusRaw}`,
+          className: "text-xs px-1.5 py-0.5 rounded bg-orange-100 text-orange-800",
+        };
+      }
+      return {
+        label: "TH pending",
+        className: "text-xs px-1.5 py-0.5 rounded bg-amber-50 text-amber-800",
+      };
+    }
 
     if (thDone && smtDone) {
       return {
