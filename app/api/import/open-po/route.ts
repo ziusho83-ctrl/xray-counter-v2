@@ -3,27 +3,104 @@ import { supabase } from "@/lib/supabase";
 import { isAdmin } from "@/lib/admin";
 
 function parseCsv(raw: string): string[][] {
-  // Handle quoted fields with commas inside
+  // RFC-4180-style state machine.
+  // Handles:
+  //  - quoted fields containing commas, CR, and LF
+  //  - escaped quotes ("") inside quoted fields
+  //  - BOM at start of input
+  //  - trailing record without newline
+  //  - both \n and \r\n line endings outside quotes
+  //
+  // Field-shape behavior matched to the prior parser:
+  //  - unquoted fields are trimmed of surrounding whitespace
+  //  - quoted fields preserve their inner content verbatim (incl. embedded newlines)
+  let input = raw;
+  if (input.charCodeAt(0) === 0xfeff) input = input.slice(1); // strip BOM
+
   const rows: string[][] = [];
-  const lines = raw.split(/\r?\n/).filter(Boolean);
-  for (const line of lines) {
-    const fields: string[] = [];
-    let current = "";
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
+  let field = "";
+  let row: string[] = [];
+  let inQuotes = false;
+  let fieldWasQuoted = false;
+  let fieldHasContent = false;
+
+  const pushField = () => {
+    row.push(fieldWasQuoted ? field : field.trim());
+    field = "";
+    fieldWasQuoted = false;
+    fieldHasContent = false;
+  };
+  const pushRow = () => {
+    pushField();
+    rows.push(row);
+    row = [];
+  };
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+
+    if (inQuotes) {
       if (ch === '"') {
-        inQuotes = !inQuotes;
-      } else if (ch === "," && !inQuotes) {
-        fields.push(current.trim());
-        current = "";
+        if (input[i + 1] === '"') {
+          // escaped quote
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
       } else {
-        current += ch;
+        field += ch;
       }
+      continue;
     }
-    fields.push(current.trim());
-    rows.push(fields);
+
+    if (ch === '"') {
+      // Opening quote only valid at the start of a field (no prior unquoted content).
+      // If a stray quote appears mid-field, treat it as a literal character to be safe.
+      if (!fieldHasContent) {
+        inQuotes = true;
+        fieldWasQuoted = true;
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+
+    if (ch === ",") {
+      pushField();
+      continue;
+    }
+
+    if (ch === "\n") {
+      pushRow();
+      continue;
+    }
+
+    if (ch === "\r") {
+      // CRLF or bare CR -> end of row
+      if (input[i + 1] === "\n") i++;
+      pushRow();
+      continue;
+    }
+
+    field += ch;
+    fieldHasContent = true;
   }
+
+  // Flush trailing record (file without final newline, or any remaining buffered field)
+  if (field.length > 0 || fieldWasQuoted || row.length > 0) {
+    pushRow();
+  }
+
+  // Drop completely empty trailing rows (e.g. file ending with a newline)
+  while (
+    rows.length > 0 &&
+    rows[rows.length - 1].length === 1 &&
+    rows[rows.length - 1][0] === ""
+  ) {
+    rows.pop();
+  }
+
   return rows;
 }
 
