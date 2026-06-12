@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 
 type Cell = string | number | boolean | Date | null | undefined;
@@ -32,42 +32,8 @@ type PwbDemand = {
   qtyPerUnit: number;
   requiredQty: number;
 };
-type WorkOrderStatus = "Planned" | "Released" | "In Process" | "Closed" | "Unknown";
-type WorkOrderStatusRow = {
-  workOrder: string;
-  status: WorkOrderStatus;
-  item: string;
-  itemKey: string;
-  description: string;
-  qtyNeeded: number;
-  prodStartDate: string;
-};
-type WorkOrderMaterialRow = {
-  workOrder: string;
-  item: string;
-  itemKey: string;
-  description: string;
-  qtyNeeded: number;
-  qtyOnHand: number;
-  qtyIssued: number;
-  units: string;
-};
-type WorkOrderPartLine = WorkOrderMaterialRow & {
-  status: WorkOrderStatus;
-  assemblyItem: string;
-  assemblyDescription: string;
-};
-type WorkOrderPartContext = {
-  openDemand: number;
-  issuedQty: number;
-  inProcessCount: number;
-  plannedReleasedCount: number;
-  closedCount: number;
-  activeWoCount: number;
-  lines: WorkOrderPartLine[];
-};
 type SortDir = "asc" | "desc";
-type SummarySortKey = "date" | "unitPn" | "unitDescription" | "pwbPn" | "requiredQty" | "unitCount" | "openDemand" | "issuedQty";
+type SummarySortKey = "date" | "unitPn" | "unitDescription" | "pwbPn" | "requiredQty" | "unitCount";
 type MissingSortKey = "unitPn" | "description" | "product" | "qty";
 
 const MONTHS: Record<string, number> = {
@@ -101,23 +67,6 @@ function cellNumber(v: Cell): number {
 
 function normPart(v: string): string {
   return v.trim().toUpperCase();
-}
-
-function normWo(v: string): string {
-  return cellText(v).trim().toUpperCase();
-}
-
-function itemKey(v: string): string {
-  return normPart(v).split(":")[0].trim();
-}
-
-function parseWoStatus(v: string): WorkOrderStatus {
-  const text = cellText(v).toLowerCase();
-  if (text === "planned") return "Planned";
-  if (text === "released") return "Released";
-  if (text === "in process" || text === "in-process" || text === "inprocess") return "In Process";
-  if (text === "closed") return "Closed";
-  return "Unknown";
 }
 
 function inferYear(fileName: string, sheetNames: string[]): number {
@@ -351,118 +300,6 @@ function parseUnitPwbWorkbook(wb: XLSX.WorkBook, pwbSet: Set<string>, filterToKn
   return Array.from(dedup.values()).sort((a, b) => a.unitPn.localeCompare(b.unitPn) || a.pwbPn.localeCompare(b.pwbPn));
 }
 
-function parseWorkOrderStatusWorkbook(wb: XLSX.WorkBook): WorkOrderStatusRow[] {
-  const out: WorkOrderStatusRow[] = [];
-  for (const sheetName of wb.SheetNames) {
-    const ws = wb.Sheets[sheetName];
-    if (!ws) continue;
-    const rows = worksheetRows(ws).filter((r) => r.some((c) => cellText(c)));
-    if (rows.length < 2) continue;
-
-    let headerIdx = -1;
-    let woIdx = -1;
-    let statusIdx = -1;
-    let itemIdx = -1;
-    let descIdx = -1;
-    let qtyIdx = -1;
-    let startIdx = -1;
-    for (let r = 0; r < Math.min(rows.length, 10); r++) {
-      const headers = rows[r].map((c) => normalizeHeader(cellText(c)));
-      const w = findHeaderIndex(headers, [/^work_order$/, /^wo$/]);
-      const s = findHeaderIndex(headers, [/^status$/]);
-      const i = findHeaderIndex(headers, [/^item$/, /^assembly$/, /^part_number$/]);
-      if (w >= 0 && s >= 0 && i >= 0) {
-        headerIdx = r;
-        woIdx = w;
-        statusIdx = s;
-        itemIdx = i;
-        descIdx = findHeaderIndex(headers, [/^description$/, /^desc$/]);
-        qtyIdx = findHeaderIndex(headers, [/^qty_needed$/, /^quantity_needed$/, /^qty$/]);
-        startIdx = findHeaderIndex(headers, [/^prod_start_date$/, /^production_start_date$/, /^start_date$/]);
-        break;
-      }
-    }
-    if (headerIdx < 0) continue;
-
-    for (let r = headerIdx + 1; r < rows.length; r++) {
-      const row = rows[r];
-      const workOrder = normWo(cellText(row[woIdx]));
-      const item = normPart(cellText(row[itemIdx]));
-      if (!workOrder || !item) continue;
-      out.push({
-        workOrder,
-        status: parseWoStatus(cellText(row[statusIdx])),
-        item,
-        itemKey: itemKey(item),
-        description: descIdx >= 0 ? cellText(row[descIdx]) : "",
-        qtyNeeded: qtyIdx >= 0 ? cellNumber(row[qtyIdx]) : 0,
-        prodStartDate: startIdx >= 0 ? cellText(row[startIdx]) : "",
-      });
-    }
-  }
-
-  const dedup = new Map<string, WorkOrderStatusRow>();
-  for (const row of out) dedup.set(row.workOrder, row);
-  return Array.from(dedup.values()).sort((a, b) => a.workOrder.localeCompare(b.workOrder));
-}
-
-function parseWorkOrderMaterialWorkbook(wb: XLSX.WorkBook): WorkOrderMaterialRow[] {
-  const out: WorkOrderMaterialRow[] = [];
-  for (const sheetName of wb.SheetNames) {
-    const ws = wb.Sheets[sheetName];
-    if (!ws) continue;
-    const rows = worksheetRows(ws).filter((r) => r.some((c) => cellText(c)));
-    if (rows.length < 2) continue;
-
-    let headerIdx = -1;
-    let woIdx = -1;
-    let itemIdx = -1;
-    let descIdx = -1;
-    let qtyNeededIdx = -1;
-    let qtyOnHandIdx = -1;
-    let qtyIssuedIdx = -1;
-    let unitsIdx = -1;
-    for (let r = 0; r < Math.min(rows.length, 10); r++) {
-      const headers = rows[r].map((c) => normalizeHeader(cellText(c)));
-      const w = findHeaderIndex(headers, [/^work_order$/, /^wo$/]);
-      const i = findHeaderIndex(headers, [/^item$/, /^part_number$/, /^component$/]);
-      const needed = findHeaderIndex(headers, [/^qty_needed$/, /^quantity_needed$/]);
-      const issued = findHeaderIndex(headers, [/^qty_issued$/, /^quantity_issued$/]);
-      if (w >= 0 && i >= 0 && needed >= 0 && issued >= 0) {
-        headerIdx = r;
-        woIdx = w;
-        itemIdx = i;
-        qtyNeededIdx = needed;
-        qtyIssuedIdx = issued;
-        descIdx = findHeaderIndex(headers, [/^description$/, /^desc$/]);
-        qtyOnHandIdx = findHeaderIndex(headers, [/^qty_on_hand$/, /^on_hand$/, /^qty_available$/]);
-        unitsIdx = findHeaderIndex(headers, [/^units$/, /^unit$/]);
-        break;
-      }
-    }
-    if (headerIdx < 0) continue;
-
-    for (let r = headerIdx + 1; r < rows.length; r++) {
-      const row = rows[r];
-      const workOrder = normWo(cellText(row[woIdx]));
-      const item = normPart(cellText(row[itemIdx]));
-      if (!workOrder || !item) continue;
-      out.push({
-        workOrder,
-        item,
-        itemKey: itemKey(item),
-        description: descIdx >= 0 ? cellText(row[descIdx]) : "",
-        qtyNeeded: cellNumber(row[qtyNeededIdx]),
-        qtyOnHand: qtyOnHandIdx >= 0 ? cellNumber(row[qtyOnHandIdx]) : 0,
-        qtyIssued: cellNumber(row[qtyIssuedIdx]),
-        units: unitsIdx >= 0 ? cellText(row[unitsIdx]) : "",
-      });
-    }
-  }
-
-  return out.sort((a, b) => a.workOrder.localeCompare(b.workOrder) || a.item.localeCompare(b.item));
-}
-
 function downloadCsv(filename: string, rows: Array<Array<string | number>>) {
   const cell = (v: string | number) => '"' + String(v ?? "").replace(/"/g, '""') + '"';
   const csv = rows.map((r) => r.map(cell).join(",")).join("\n");
@@ -478,16 +315,11 @@ function downloadCsv(filename: string, rows: Array<Array<string | number>>) {
 export default function IopPage() {
   const [forecastFile, setForecastFile] = useState("");
   const [mappingFile, setMappingFile] = useState("");
-  const [workOrderStatusFile, setWorkOrderStatusFile] = useState("");
-  const [workOrderMaterialFile, setWorkOrderMaterialFile] = useState("");
   const [forecastRows, setForecastRows] = useState<ForecastDemand[]>([]);
   const [mappingRows, setMappingRows] = useState<UnitPwbMapRow[]>([]);
-  const [workOrderStatusRows, setWorkOrderStatusRows] = useState<WorkOrderStatusRow[]>([]);
-  const [workOrderMaterialRows, setWorkOrderMaterialRows] = useState<WorkOrderMaterialRow[]>([]);
   const [boms, setBoms] = useState<BomItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filterToKnownPwbs, setFilterToKnownPwbs] = useState(true);
-  const [expandedPwb, setExpandedPwb] = useState<string | null>(null);
   const [summarySort, setSummarySort] = useState<{ key: SummarySortKey; dir: SortDir }>({ key: "date", dir: "asc" });
   const [missingSort, setMissingSort] = useState<{ key: MissingSortKey; dir: SortDir }>({ key: "qty", dir: "desc" });
 
@@ -534,32 +366,6 @@ export default function IopPage() {
     }
   }
 
-  async function loadWorkOrderStatus(file: File) {
-    setError(null);
-    setWorkOrderStatusFile(file.name);
-    try {
-      const wb = await readWorkbook(file);
-      const rows = parseWorkOrderStatusWorkbook(wb);
-      setWorkOrderStatusRows(rows);
-      if (rows.length === 0) setError("No WO status rows found. Expected Work Order, Status, Item, and Qty Needed columns.");
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to parse WO status report");
-    }
-  }
-
-  async function loadWorkOrderMaterial(file: File) {
-    setError(null);
-    setWorkOrderMaterialFile(file.name);
-    try {
-      const wb = await readWorkbook(file);
-      const rows = parseWorkOrderMaterialWorkbook(wb);
-      setWorkOrderMaterialRows(rows);
-      if (rows.length === 0) setError("No WO material-issued rows found. Expected Work Order, Item, Qty Needed, and Qty Issued columns.");
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to parse WO material-issued report");
-    }
-  }
-
   const pwbDemand = useMemo<PwbDemand[]>(() => {
     const map = new Map<string, UnitPwbMapRow[]>();
     for (const m of mappingRows) {
@@ -585,82 +391,6 @@ export default function IopPage() {
     return rows.sort((a, b) => a.date.localeCompare(b.date) || a.pwbPn.localeCompare(b.pwbPn) || a.unitPn.localeCompare(b.unitPn));
   }, [forecastRows, mappingRows]);
 
-  const workOrderStatusByWo = useMemo(() => {
-    const map = new Map<string, WorkOrderStatusRow>();
-    for (const row of workOrderStatusRows) map.set(row.workOrder, row);
-    return map;
-  }, [workOrderStatusRows]);
-
-  const workOrderContextByPart = useMemo(() => {
-    const map = new Map<string, WorkOrderPartContext>();
-    const getContext = (key: string) => {
-      let context = map.get(key);
-      if (!context) {
-        context = { openDemand: 0, issuedQty: 0, inProcessCount: 0, plannedReleasedCount: 0, closedCount: 0, activeWoCount: 0, lines: [] };
-        map.set(key, context);
-      }
-      return context;
-    };
-    const seenWoByPart = new Map<string, Set<string>>();
-
-    for (const row of workOrderMaterialRows) {
-      if (!row.itemKey || row.workOrder.startsWith("R")) continue;
-      const active = workOrderStatusByWo.get(row.workOrder);
-      const status = active?.status || "Closed";
-      const context = getContext(row.itemKey);
-      context.lines.push({
-        ...row,
-        status,
-        assemblyItem: active?.item || "",
-        assemblyDescription: active?.description || "",
-      });
-
-      const seenKey = row.itemKey;
-      if (!seenWoByPart.has(seenKey)) seenWoByPart.set(seenKey, new Set());
-      const seen = seenWoByPart.get(seenKey)!;
-      const firstWoPartLine = !seen.has(row.workOrder);
-      seen.add(row.workOrder);
-
-      if (status === "Planned" || status === "Released") {
-        context.openDemand += row.qtyNeeded;
-        if (firstWoPartLine) {
-          context.activeWoCount += 1;
-          context.plannedReleasedCount += 1;
-        }
-      } else if (status === "In Process") {
-        context.issuedQty += row.qtyIssued;
-        if (firstWoPartLine) {
-          context.activeWoCount += 1;
-          context.inProcessCount += 1;
-        }
-      } else if (status === "Closed") {
-        if (firstWoPartLine) context.closedCount += 1;
-      }
-    }
-
-    for (const context of map.values()) {
-      context.lines.sort((a, b) => {
-        const statusOrder = { "In Process": 0, Released: 1, Planned: 2, Unknown: 3, Closed: 4 } as Record<WorkOrderStatus, number>;
-        return statusOrder[a.status] - statusOrder[b.status] || a.workOrder.localeCompare(b.workOrder) || b.qtyIssued - a.qtyIssued || b.qtyNeeded - a.qtyNeeded;
-      });
-    }
-    return map;
-  }, [workOrderMaterialRows, workOrderStatusByWo]);
-
-  const workOrderStats = useMemo(() => {
-    const activeNonRework = workOrderStatusRows.filter((r) => !r.workOrder.startsWith("R"));
-    const materialWos = new Set(workOrderMaterialRows.map((r) => r.workOrder).filter((wo) => !wo.startsWith("R")));
-    let inferredClosed = 0;
-    for (const wo of materialWos) if (!workOrderStatusByWo.has(wo)) inferredClosed += 1;
-    return {
-      active: activeNonRework.length,
-      material: materialWos.size,
-      inferredClosed,
-      inProcess: activeNonRework.filter((r) => r.status === "In Process").length,
-      plannedReleased: activeNonRework.filter((r) => r.status === "Planned" || r.status === "Released").length,
-    };
-  }, [workOrderMaterialRows, workOrderStatusByWo, workOrderStatusRows]);
-
   const summary = useMemo(() => {
     const agg = new Map<string, { date: string; pwbPn: string; requiredQty: number; unitCount: number; unitPns: Set<string>; unitDescriptions: Set<string> }>();
     for (const r of pwbDemand) {
@@ -682,18 +412,14 @@ export default function IopPage() {
         });
       }
     }
-    const rows = Array.from(agg.values()).map((r) => {
-      const woContext = workOrderContextByPart.get(itemKey(r.pwbPn)) || { openDemand: 0, issuedQty: 0, inProcessCount: 0, plannedReleasedCount: 0, closedCount: 0, activeWoCount: 0, lines: [] };
-      return {
-        date: r.date,
-        pwbPn: r.pwbPn,
-        requiredQty: r.requiredQty,
-        unitCount: r.unitCount,
-        unitPn: Array.from(r.unitPns).sort().join("; "),
-        unitDescription: Array.from(r.unitDescriptions).sort().join("; "),
-        woContext,
-      };
-    });
+    const rows = Array.from(agg.values()).map((r) => ({
+      date: r.date,
+      pwbPn: r.pwbPn,
+      requiredQty: r.requiredQty,
+      unitCount: r.unitCount,
+      unitPn: Array.from(r.unitPns).sort().join("; "),
+      unitDescription: Array.from(r.unitDescriptions).sort().join("; "),
+    }));
     rows.sort((a, b) => {
       let cmp = 0;
       switch (summarySort.key) {
@@ -703,14 +429,12 @@ export default function IopPage() {
         case "pwbPn": cmp = a.pwbPn.localeCompare(b.pwbPn); break;
         case "requiredQty": cmp = a.requiredQty - b.requiredQty; break;
         case "unitCount": cmp = a.unitCount - b.unitCount; break;
-        case "openDemand": cmp = a.woContext.openDemand - b.woContext.openDemand; break;
-        case "issuedQty": cmp = a.woContext.issuedQty - b.woContext.issuedQty; break;
       }
       if (cmp === 0) cmp = a.date.localeCompare(b.date) || a.pwbPn.localeCompare(b.pwbPn);
       return summarySort.dir === "asc" ? cmp : -cmp;
     });
     return rows;
-  }, [pwbDemand, summarySort, workOrderContextByPart]);
+  }, [pwbDemand, summarySort]);
 
   const missingUnits = useMemo(() => {
     const mapped = new Set(mappingRows.map((m) => m.unitPn));
@@ -771,28 +495,17 @@ export default function IopPage() {
     return missingSort.key === key ? (missingSort.dir === "asc" ? " ↑" : " ↓") : " ↕";
   }
 
-  function woCoverageLabel(context: WorkOrderPartContext) {
-    const labels: string[] = [];
-    if (context.inProcessCount) labels.push(`${context.inProcessCount} In Process`);
-    if (context.plannedReleasedCount) labels.push(`${context.plannedReleasedCount} Planned/Released`);
-    if (context.closedCount) labels.push(`${context.closedCount} Closed`);
-    return labels.length > 0 ? labels.join(", ") : "No WO match";
-  }
-
   function exportDetail() {
     downloadCsv("iop-pwb-demand-detail.csv", [
-      ["date", "product", "unit_pn", "unit_description", "unit_qty", "pwb_pn", "qty_per_unit", "required_qty", "wo_open_demand", "wo_issued_qty", "wo_coverage"],
-      ...pwbDemand.map((r) => {
-        const context = workOrderContextByPart.get(itemKey(r.pwbPn)) || { openDemand: 0, issuedQty: 0, inProcessCount: 0, plannedReleasedCount: 0, closedCount: 0, activeWoCount: 0, lines: [] };
-        return [r.date, r.product, r.unitPn, r.unitDescription, r.unitQty, r.pwbPn, r.qtyPerUnit, r.requiredQty, context.openDemand, context.issuedQty, woCoverageLabel(context)];
-      }),
+      ["date", "product", "unit_pn", "unit_description", "unit_qty", "pwb_pn", "qty_per_unit", "required_qty"],
+      ...pwbDemand.map((r) => [r.date, r.product, r.unitPn, r.unitDescription, r.unitQty, r.pwbPn, r.qtyPerUnit, r.requiredQty]),
     ]);
   }
 
   function exportSummary() {
     downloadCsv("iop-pwb-demand-summary.csv", [
-      ["date", "unit_level_part_number", "unit_level_part_number_description", "pwb_pn", "required_qty", "source_unit_lines", "wo_open_demand", "wo_issued_qty", "wo_coverage"],
-      ...summary.map((r) => [r.date, r.unitPn, r.unitDescription, r.pwbPn, r.requiredQty, r.unitCount, r.woContext.openDemand, r.woContext.issuedQty, woCoverageLabel(r.woContext)]),
+      ["date", "unit_level_part_number", "unit_level_part_number_description", "pwb_pn", "required_qty", "source_unit_lines"],
+      ...summary.map((r) => [r.date, r.unitPn, r.unitDescription, r.pwbPn, r.requiredQty, r.unitCount]),
     ]);
   }
 
@@ -833,27 +546,6 @@ export default function IopPage() {
         </div>
       </section>
 
-      <section className="border rounded p-4 space-y-3">
-        <div>
-          <h2 className="font-semibold">3) WO context reports</h2>
-          <p className="text-xs text-gray-500">Upload WO status plus WO Material Issued. Planned/Released counts as open demand; In Process counts as already issued; missing from active status but present in material history is inferred Closed. R* rework WOs are ignored here.</p>
-        </div>
-        <div className="grid md:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <div className="text-xs font-medium">WO Status</div>
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadWorkOrderStatus(f); }} />
-            {workOrderStatusFile && <div className="text-xs text-gray-600">Loaded: {workOrderStatusFile}</div>}
-            <div className="text-xs">Active non-rework WOs: <b>{workOrderStats.active}</b></div>
-          </div>
-          <div className="space-y-2">
-            <div className="text-xs font-medium">WO Material Issued</div>
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => { const f = e.target.files?.[0]; if (f) void loadWorkOrderMaterial(f); }} />
-            {workOrderMaterialFile && <div className="text-xs text-gray-600">Loaded: {workOrderMaterialFile}</div>}
-            <div className="text-xs">Non-rework WOs in material history: <b>{workOrderStats.material}</b></div>
-          </div>
-        </div>
-      </section>
-
       {error && <div className="border border-red-300 bg-red-50 text-red-700 rounded p-3">{error}</div>}
 
       <section className="grid md:grid-cols-4 gap-3">
@@ -861,10 +553,6 @@ export default function IopPage() {
         <div className="border rounded p-3">Unit/PWB mappings: <b>{mappingRows.length}</b></div>
         <div className="border rounded p-3">PWB demand lines: <b>{pwbDemand.length}</b></div>
         <div className="border rounded p-3">Unmapped Unit PNs: <b>{missingUnits.length}</b></div>
-        <div className="border rounded p-3">WO Planned/Released: <b>{workOrderStats.plannedReleased}</b></div>
-        <div className="border rounded p-3">WO In Process: <b>{workOrderStats.inProcess}</b></div>
-        <div className="border rounded p-3">Inferred Closed WOs: <b>{workOrderStats.inferredClosed}</b></div>
-        <div className="border rounded p-3">PWB WO matches: <b>{summary.filter((r) => r.woContext.lines.length > 0).length}</b></div>
       </section>
 
       {summary.length > 0 && (
@@ -885,75 +573,20 @@ export default function IopPage() {
                   <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("unitDescription")}>Unit Level Part Number Description{summarySortLabel("unitDescription")}</th>
                   <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("pwbPn")}>PWB{summarySortLabel("pwbPn")}</th>
                   <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("requiredQty")}>Required Qty{summarySortLabel("requiredQty")}</th>
-                  <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("openDemand")}>WO Open Demand{summarySortLabel("openDemand")}</th>
-                  <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("issuedQty")}>Issued to WO{summarySortLabel("issuedQty")}</th>
-                  <th className="p-2">WO Coverage</th>
                   <th className="p-2 cursor-pointer select-none hover:bg-gray-100" onClick={() => toggleSummarySort("unitCount")}>Source Lines{summarySortLabel("unitCount")}</th>
                 </tr>
               </thead>
               <tbody>
-                {summary.map((r) => {
-                  const rowKey = `${r.date}-${r.pwbPn}`;
-                  const expanded = expandedPwb === rowKey;
-                  return (
-                    <Fragment key={rowKey}>
-                      <tr className="border-b">
-                        <td className="p-2 whitespace-nowrap">{r.date}</td>
-                        <td className="p-2 font-mono">{r.unitPn}</td>
-                        <td className="p-2 min-w-72">{r.unitDescription || "—"}</td>
-                        <td className="p-2 font-mono">{r.pwbPn}</td>
-                        <td className="p-2 font-semibold">{r.requiredQty}</td>
-                        <td className="p-2 font-semibold text-amber-700">{r.woContext.openDemand || "—"}</td>
-                        <td className="p-2 font-semibold text-blue-700">{r.woContext.issuedQty || "—"}</td>
-                        <td className="p-2 min-w-48">
-                          <button
-                            className={`text-left ${r.woContext.lines.length > 0 ? "underline decoration-dotted" : "text-gray-500"}`}
-                            disabled={r.woContext.lines.length === 0}
-                            onClick={() => setExpandedPwb((prev) => prev === rowKey ? null : rowKey)}
-                          >
-                            {woCoverageLabel(r.woContext)}
-                          </button>
-                        </td>
-                        <td className="p-2">{r.unitCount}</td>
-                      </tr>
-                      {expanded && (
-                        <tr className="border-b bg-gray-50">
-                          <td className="p-3" colSpan={9}>
-                            <div className="mb-2 text-xs font-semibold">WO detail for {r.pwbPn}</div>
-                            <div className="overflow-auto max-h-80 rounded border bg-white">
-                              <table className="w-full text-xs">
-                                <thead className="sticky top-0 bg-white">
-                                  <tr className="text-left border-b">
-                                    <th className="p-2">WO</th>
-                                    <th className="p-2">Status</th>
-                                    <th className="p-2">Assembly / Sub-assembly</th>
-                                    <th className="p-2">Material</th>
-                                    <th className="p-2">Qty Needed</th>
-                                    <th className="p-2">Qty Issued</th>
-                                    <th className="p-2">On Hand</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {r.woContext.lines.map((line, idx) => (
-                                    <tr key={`${line.workOrder}-${line.item}-${idx}`} className="border-b">
-                                      <td className="p-2 font-mono">{line.workOrder}</td>
-                                      <td className="p-2">{line.status}</td>
-                                      <td className="p-2 font-mono">{line.assemblyItem || "—"}{line.assemblyDescription ? <div className="font-sans text-gray-500">{line.assemblyDescription}</div> : null}</td>
-                                      <td className="p-2 font-mono">{line.item}<div className="font-sans text-gray-500">{line.description || "—"}</div></td>
-                                      <td className="p-2 font-semibold">{line.qtyNeeded || "—"}</td>
-                                      <td className="p-2 font-semibold text-blue-700">{line.qtyIssued || "—"}</td>
-                                      <td className="p-2">{line.qtyOnHand || "—"}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
+                {summary.map((r) => (
+                  <tr key={`${r.date}-${r.pwbPn}`} className="border-b">
+                    <td className="p-2 whitespace-nowrap">{r.date}</td>
+                    <td className="p-2 font-mono">{r.unitPn}</td>
+                    <td className="p-2 min-w-72">{r.unitDescription || "—"}</td>
+                    <td className="p-2 font-mono">{r.pwbPn}</td>
+                    <td className="p-2 font-semibold">{r.requiredQty}</td>
+                    <td className="p-2">{r.unitCount}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
